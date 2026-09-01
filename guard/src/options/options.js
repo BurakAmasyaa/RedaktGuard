@@ -2,9 +2,8 @@ import { GUARDED_SITES } from "../hosts.js";
 import { CMD, ENGINE_PORT, MSG } from "../protocol.js";
 import { DEVICE_KEY, readSettings, writeSettings } from "../settings.js";
 
-// Koruma/otomatik maskeleme alanları kurumsal politikadır ve arayüzden
-// gevşetilemez. Yalnız modelin promptlarda da kullanılması performans tercihidir.
-const TOGGLES = ["promptModelScan"];
+// Koruma, otomatik maskeleme ve prompt modeli kurumsal politikadır; arayüzden
+// gevşetilemez. Bu sayfada yalnız sunucu adresi ve tarama profili değiştirilebilir.
 const el = (id) => document.getElementById(id);
 
 function paintRules(cache, serverConfigured = true) {
@@ -31,7 +30,6 @@ async function load() {
   const settings = await readSettings();
   el("serverUrl").value = settings.serverUrl;
   el("profile").value = settings.profile;
-  for (const key of TOGGLES) el(key).checked = settings[key];
 
   el("sites").replaceChildren(
     ...GUARDED_SITES.map((site) => {
@@ -61,9 +59,6 @@ async function load() {
   }
 }
 
-for (const key of TOGGLES) {
-  el(key).addEventListener("change", () => writeSettings({ [key]: el(key).checked }));
-}
 el("profile").addEventListener("change", () => writeSettings({ profile: el("profile").value }));
 
 el("connect").addEventListener("click", async () => {

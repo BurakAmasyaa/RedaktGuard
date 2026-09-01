@@ -7,6 +7,7 @@ import { PANEL_CSS } from "./panel-styles.js";
 // yüzdeden daha çok işe yarar: hangi adımın uzun sürdüğü görünür.
 const PHASE_LABELS = {
   connecting: "Tarama motoru hazırlanıyor",
+  queued: "Diğer sekmedeki tarama bekleniyor",
   transferring: "Dosya motora aktarılıyor",
   model: "Yerel model hazırlanıyor",
   extracting: "Belge açılıyor",

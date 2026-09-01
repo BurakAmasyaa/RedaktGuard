@@ -25,6 +25,7 @@ export const ENTERPRISE_POLICY = Object.freeze({
   autoSelectProbable: true,
   automaticMasking: true,
   guardPrompts: true,
+  promptModelScan: true,
 });
 
 export const DEFAULT_SETTINGS = Object.freeze({
@@ -46,9 +47,9 @@ export const DEFAULT_SETTINGS = Object.freeze({
   networkGuard: true,
   // Prompt metni koruması: yapıştırma ve gönderim taranır.
   guardPrompts: true,
-  // Prompt taramasında yerel model de çalışsın mı. Kişi ve kurum adlarını
-  // yakalar ama her gönderime saniyeler ekler; bu yüzden varsayılan kapalı.
-  promptModelScan: false,
+  // Prompt taramasında yerel model de çalışır. Kurumsal dağıtımda zorunlu
+  // açıktır; kişi, kurum ve konum bulguları kullanıcı tercihine bırakılamaz.
+  promptModelScan: true,
 });
 
 export function coerceSettings(stored) {

@@ -10,8 +10,18 @@ import {
   APPROVED_ATTRIBUTE,
   CMD,
   CONFIG_ATTRIBUTE,
+  DROP_CLEANUP_EVENT,
+  DROP_DELIVERY_ACK_ATTRIBUTE,
+  DROP_DELIVERY_ACTIVE_ATTRIBUTE,
+  DROP_DELIVERY_EVENT,
+  DROP_DELIVERY_POINT_ATTRIBUTE,
+  DROP_DELIVERY_TARGET_ATTRIBUTE,
+  DROP_DELIVERY_TOKEN_ATTRIBUTE,
   ENGINE_PORT,
   ENGINE_SILENCE_TIMEOUT_MS,
+  FILE_DELIVERY_ACK_ATTRIBUTE,
+  FILE_DELIVERY_EVENT,
+  FILE_DELIVERY_TOKEN_ATTRIBUTE,
   GUARD_MARK,
   MAX_SCANNABLE_BYTES,
   MSG,
@@ -40,6 +50,9 @@ import { SYNC_SCAN_LIMIT, maskPromptText, primeRules, scanPromptText } from "./t
 const SITE = siteLabelFor(location.hostname);
 const SITE_ID = siteIdFor(location.hostname);
 const synthetic = new WeakSet();
+// MAIN-world rölenin ürettiği input/change olayları tekrar taranmamalı.
+// Sayaç kullanılır çünkü tek teslimde iki ayrı olay gelir.
+const replayingFileInputs = new WeakMap();
 
 let settings = { ...DEFAULT_SETTINGS };
 let settingsReady = false;
@@ -361,14 +374,20 @@ async function guardFiles(files, deliver) {
   let recovering = false;
   const sessions = [];
 
-  const finish = (delivered) => {
+  let finished = false;
+  const finish = async (delivered) => {
+    if (finished) return;
+    finished = true;
     for (const session of sessions) engine?.release(session.id);
     engine?.close();
     panel.destroy();
-    releaseFlow();
-    if (delivered?.length) {
-      approve(delivered);
-      deliver(delivered);
+    try {
+      if (delivered?.length) {
+        approve(delivered);
+        await deliver(delivered);
+      }
+    } finally {
+      releaseFlow();
     }
   };
 
@@ -397,7 +416,7 @@ async function guardFiles(files, deliver) {
       total: files.length,
       onCancel: () => {
         cancelled = true;
-        finish(null);
+        void finish(null);
       },
     });
 
@@ -423,7 +442,7 @@ async function guardFiles(files, deliver) {
         total: files.length,
         onCancel: () => {
           cancelled = true;
-          finish(null);
+          void finish(null);
         },
       });
 
@@ -484,7 +503,7 @@ async function guardFiles(files, deliver) {
         total: scanned.length,
         onCancel: () => {
           cancelled = true;
-          finish(null);
+          void finish(null);
         },
       });
       panel.setProgress({ detail: "Maskelenmiş kopya hazırlanıyor." });
@@ -504,7 +523,7 @@ async function guardFiles(files, deliver) {
     toast(`${maskedCount} bulgu otomatik maskelendi; güvenli kopya yükleniyor.`);
     // Maskeli kopyanın teslimi rozet/audit gibi yardımcı bildirimlerden önce
     // başlar. Uzantı tam bu anda yeniden yüklense bile güvenli çıktı kaybolmaz.
-    finish(output);
+    await finish(output);
     reportActivity(maskedCount);
     reportAudit({ artifact: "file", summaries: auditSummaries, formats: auditFormats });
   } catch (error) {
@@ -547,9 +566,8 @@ function ruleWarnings() {
 }
 
 // Eşzamanlı karar: metne dokunulacak mı? null dönerse hiç karışılmaz.
-// Model taraması açıkken karar eşzamanlı verilemez — model ancak offscreen
-// belgede çalışır — bu yüzden o modda her gönderim panele uğrar. Ayarın
-// varsayılan kapalı olmasının sebebi tam olarak budur.
+// Model taraması kurum politikasıyla zorunlu açıktır. Karar eşzamanlı verilemez
+// — model ancak offscreen belgede çalışır — bu yüzden her gönderim panele uğrar.
 function promptDecision(text) {
   if (!promptGuardActive()) return null;
   if (!String(text).trim()) return null;
@@ -753,27 +771,98 @@ function findCompatibleFileInput(files) {
     const hint = `${input.id} ${input.name} ${input.className} ${input.getAttribute("aria-label") || ""}`.toLowerCase();
     let value = input.multiple ? 4 : 0;
     if (/upload|attach|attachment|file|dosya|belge|ek/iu.test(hint)) value += 8;
-    if (/avatar|profile|camera|profil/iu.test(hint)) value -= 20;
+    if (/avatar|profile|camera|profil/iu.test(hint)) return -100;
+    const form = input.closest("form");
+    const editorSelector =
+      SITE_ID === "gemini"
+        ? "rich-textarea, div.ql-editor[contenteditable='true']"
+        : "div.ProseMirror[contenteditable='true']";
+    if (form?.querySelector(editorSelector)) value += 20;
+    else if (input.parentElement?.parentElement?.querySelector?.(editorSelector)) value += 12;
+    if (input.closest("main")) value += 2;
     return value;
   };
-  return candidates.sort((left, right) => score(right) - score(left))[0];
+  const ranked = candidates.map((input) => ({ input, score: score(input) })).sort((left, right) => right.score - left.score);
+  // Yalnızca profil/kamera girdisi varsa ona güvenli belge teslim edip başarı
+  // sanma. Doğrudan kullanıcı seçiminin input'u bu filtreden geçmeden saklanır.
+  return ranked[0]?.score > 0 ? ranked[0].input : null;
 }
 
 function replayFilesToInput(input, files) {
-  if (!(input instanceof HTMLInputElement) || !input.isConnected || input.disabled) return false;
+  if (!(input instanceof HTMLInputElement) || input.type !== "file" || input.disabled) return false;
   try {
     const transfer = makeTransfer(files);
     const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "files")?.set;
     if (setter) setter.call(input, transfer.files);
     else input.files = transfer.files;
+
+    // Önce MAIN-world rölesini dene. Bu yol framework olayını Gemini/Claude'un
+    // kendi JavaScript bağlamında üretir ve tarama sırasında DOM'dan ayrılmış
+    // eski input'ta da (page-guard'ın doğrudan dinleyicisi sayesinde) çalışır.
+    const token = crypto.randomUUID();
+    input.setAttribute(FILE_DELIVERY_TOKEN_ATTRIBUTE, token);
+    replayingFileInputs.set(input, 2);
+    input.dispatchEvent(new CustomEvent(FILE_DELIVERY_EVENT, { bubbles: true, composed: true }));
+    const relayed = input.getAttribute(FILE_DELIVERY_ACK_ATTRIBUTE) === token;
+    input.removeAttribute(FILE_DELIVERY_TOKEN_ATTRIBUTE);
+    input.removeAttribute(FILE_DELIVERY_ACK_ATTRIBUTE);
+    if (relayed) return true;
+
+    replayingFileInputs.delete(input);
+    // Eski sayfa/uzantı oturumunda page-guard henüz yenilenmemiş olabilir.
+    // Bağlı bir input için önceki isolated-world davranışı güvenli yedektir.
     for (const type of ["input", "change"]) {
       const replay = new Event(type, { bubbles: true, composed: true });
       synthetic.add(replay);
       input.dispatchEvent(replay);
     }
-    return true;
+    return input.isConnected;
+  } catch {
+    replayingFileInputs.delete(input);
+    input?.removeAttribute?.(FILE_DELIVERY_TOKEN_ATTRIBUTE);
+    input?.removeAttribute?.(FILE_DELIVERY_ACK_ATTRIBUTE);
+    return false;
+  }
+}
+
+function deliverToFileInput(firstInput, files) {
+  const candidates = [firstInput, findCompatibleFileInput(files)].filter(Boolean);
+  const tried = new Set();
+  for (const input of candidates) {
+    if (tried.has(input)) continue;
+    tried.add(input);
+    if (replayFilesToInput(input, files)) return true;
+  }
+  return false;
+}
+
+const prefersFileInputDelivery = () => SITE_ID === "gemini" || SITE_ID === "claude";
+
+function replayDropInPage(target, files, { clientX = 0, clientY = 0 } = {}) {
+  if (!(target instanceof Element) || !target.isConnected || !files.length) return false;
+  const bridge = document.createElement("input");
+  bridge.type = "file";
+  bridge.multiple = true;
+  bridge.hidden = true;
+  bridge.setAttribute("aria-hidden", "true");
+  const token = crypto.randomUUID();
+  try {
+    const transfer = makeTransfer(files);
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "files")?.set;
+    if (setter) setter.call(bridge, transfer.files);
+    else bridge.files = transfer.files;
+    bridge.setAttribute(DROP_DELIVERY_TOKEN_ATTRIBUTE, token);
+    bridge.setAttribute(DROP_DELIVERY_POINT_ATTRIBUTE, JSON.stringify([clientX, clientY]));
+    target.setAttribute(DROP_DELIVERY_TARGET_ATTRIBUTE, token);
+    document.documentElement.append(bridge);
+    target.dispatchEvent(new CustomEvent(DROP_DELIVERY_EVENT, { bubbles: true, composed: true }));
+    return bridge.getAttribute(DROP_DELIVERY_ACK_ATTRIBUTE) === token;
   } catch {
     return false;
+  } finally {
+    target.removeAttribute(DROP_DELIVERY_TARGET_ATTRIBUTE);
+    document.documentElement.removeAttribute(DROP_DELIVERY_ACTIVE_ATTRIBUTE);
+    bridge.remove();
   }
 }
 
@@ -786,14 +875,20 @@ function dropTargetOf(event) {
 // için olay kabarcıklanırken kök dinleyiciye hiç uğramaz. Önce imlecin
 // altındaki öğe, sonra kök konteyner denenir.
 function deliveryFallback(clientX, clientY) {
+  const pointTarget = document.elementFromPoint(clientX ?? 0, clientY ?? 0);
+  if (pointTarget && pointTarget !== document.body && pointTarget !== document.documentElement) return pointTarget;
   // Gemini tam sayfa drop dinlemiyor; ek kabul eden bileşen prompt alanının
   // çevresinde. İmleç boş arka plandaysa drop oraya gider ve sessizce kaybolur.
-  if (SITE_ID === "gemini") {
-    const editor = document.querySelector("rich-textarea, div.ql-editor[contenteditable='true']");
+  if (SITE_ID === "gemini" || SITE_ID === "claude") {
+    const editor = document.querySelector(
+      SITE_ID === "gemini"
+        ? "rich-textarea, div.ql-editor[contenteditable='true']"
+        : "div.ProseMirror[contenteditable='true']"
+    );
     if (editor?.isConnected) return editor;
   }
   return (
-    document.elementFromPoint(clientX ?? 0, clientY ?? 0) ||
+    pointTarget ||
     document.querySelector("main") ||
     document.body?.firstElementChild ||
     document.body
@@ -815,11 +910,95 @@ function dispatchDrag(target, type, dataTransfer, { clientX = 0, clientY = 0, re
 }
 
 const nextFrame = () => new Promise((resolve) => requestAnimationFrame(resolve));
+const shortDelay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+
+function attachmentUiCount() {
+  const selectors = [
+    '[data-testid*="attachment" i]',
+    '[class*="attachment" i]',
+    '[class*="file-chip" i]',
+    '[class*="upload-preview" i]',
+    'img[src^="blob:"]',
+    'video[src^="blob:"]',
+  ];
+  return new Set(document.querySelectorAll(selectors.join(", "))).size;
+}
+
+function deliveryVisible(files, baseline) {
+  const text = String(document.body?.innerText || "").toLocaleLowerCase("tr-TR");
+  const namesVisible = files.every((file) => text.includes(String(file.name || "").toLocaleLowerCase("tr-TR")));
+  return namesVisible || attachmentUiCount() > baseline;
+}
+
+async function waitForDelivery(files, baseline, timeoutMs = 2200) {
+  const deadline = performance.now() + timeoutMs;
+  do {
+    if (deliveryVisible(files, baseline)) return true;
+    await shortDelay(100);
+  } while (performance.now() < deadline);
+  return deliveryVisible(files, baseline);
+}
+
+function announceDelivered(files) {
+  toast(`${files.length > 1 ? `${files.length} maskelenmiş dosya` : "Maskelenmiş güvenli kopya"} ${SITE} yükleme alanına eklendi.`);
+}
+
+function visibleDropOverlays() {
+  const found = new Set();
+  const candidates = document.querySelectorAll(
+    '[data-testid*="drop" i], [class*="drop-overlay" i], [class*="dropzone" i], [class*="drop-zone" i], [role="dialog"]'
+  );
+  for (const element of candidates) {
+    if (element instanceof HTMLElement && element.getClientRects().length) found.add(element);
+  }
+  // Claude'un güncel perdesinde kararlı bir test id yok; görünen metinden
+  // yalnız en yakın kapsayıcıyı bulup ona terminal drop/leave gönderilir.
+  for (const element of document.querySelectorAll("div, p, span")) {
+    const text = String(element.textContent || "").trim();
+    if (!/^(drop files here to add to chat|add anything|dosyaları buraya bırak)/iu.test(text)) continue;
+    if (element instanceof HTMLElement && element.getClientRects().length) found.add(element.parentElement || element);
+  }
+  return [...found];
+}
+
+async function cleanupDropUi(originalTarget, clientX, clientY) {
+  await nextFrame();
+  const overlays = visibleDropOverlays();
+  const targets = new Set([
+    originalTarget?.isConnected ? originalTarget : null,
+    document.elementFromPoint(clientX ?? 0, clientY ?? 0),
+    ...overlays,
+    document.activeElement,
+    document.body,
+    document.documentElement,
+  ]);
+  const empty = new DataTransfer();
+  // Görünen perdeye boş terminal drop göndermek site iç durumunu kapatır;
+  // dosya olmadığı için yeni yükleme başlatamaz.
+  for (const overlay of overlays) dispatchDrag(overlay, "drop", empty, { clientX, clientY });
+  for (const target of targets) {
+    if (!target?.dispatchEvent) continue;
+    if (target instanceof Element && target.isConnected) {
+      target.dispatchEvent(new CustomEvent(DROP_CLEANUP_EVENT, { bubbles: true, composed: true }));
+    }
+    dispatchDrag(target, "dragleave", empty, { clientX: -1, clientY: -1 });
+    dispatchDrag(target, "dragend", empty, { clientX: -1, clientY: -1 });
+  }
+  const escape = new KeyboardEvent("keydown", {
+    key: "Escape",
+    code: "Escape",
+    bubbles: true,
+    cancelable: true,
+    composed: true,
+  });
+  synthetic.add(escape);
+  (document.activeElement || document.body)?.dispatchEvent(escape);
+}
 
 window.addEventListener(
   "drop",
   (event) => {
-    if (synthetic.has(event)) return;
+    if (synthetic.has(event) || document.documentElement.hasAttribute(DROP_DELIVERY_ACTIVE_ATTRIBUTE)) return;
     const files = [...(event.dataTransfer?.files || [])];
     if (!shouldIntercept(files)) return;
 
@@ -828,24 +1007,29 @@ window.addEventListener(
 
     const target = dropTargetOf(event);
     const { clientX, clientY } = event;
+    const deliveryBaseline = attachmentUiCount();
+    // Menü/overlay tarama sırasında kapanabilir. Kullanıcının güvenilir drop
+    // anında var olan input'u sakla; page-guard ona MAIN-world dinleyici bağladı.
+    const firstInput = prefersFileInputDelivery() ? findCompatibleFileInput(files) : null;
 
-    // Sayfa drop'u hiç görmediği için kendi sürükleme durumunu temizleyemez:
-    // HTML modelinde drop ile dragleave birbirinin alternatifidir, ikisi
-    // birden gelmez ve dragend işletim sistemi sürüklemesinde sayfaya hiç
-    // uğramaz. Kesme anında tek bir dragleave göndermek iptal, hata ve meşgul
-    // yollarının hepsini tek noktadan kapatır; yoksa "buraya bırak" katmanı
-    // ekranda kilitli kalır.
-    dispatchDrag(target, "dragleave", null, { clientX, clientY });
-
-    guardFiles(files, async (delivered) => {
-      // Gemini'nin güncel arayüzü sentetik tam-sayfa drop'u her zaman dosya
-      // eki saymıyor. Varsa kendi gerçek file input'una aynı güvenli kopyayı
-      // ver; normal input/change hattı sitenin yükleyicisini çalıştırır.
-      if (SITE_ID === "gemini") {
-        const input = findCompatibleFileInput(delivered);
-        if (input && replayFilesToInput(input, delivered)) return;
-      }
+    void guardFiles(files, async (delivered) => {
       let host = target.isConnected ? target : deliveryFallback(clientX, clientY);
+      // Drag ile başlayan akışı önce aynı mekanizmayla, fakat sayfanın MAIN
+      // dünyasında tamamla. Bu hem Gemini teslimini hem Claude perdesinin kendi
+      // drop durumunu kapatmasını sağlar.
+      if (prefersFileInputDelivery() && replayDropInPage(host, delivered, { clientX, clientY })) {
+        if (await waitForDelivery(delivered, deliveryBaseline)) {
+          announceDelivered(delivered);
+          return;
+        }
+      }
+      // MAIN drag yolu kullanılamadıysa gerçek upload input'u ikinci yedektir.
+      if (prefersFileInputDelivery() && deliverToFileInput(firstInput, delivered)) {
+        if (await waitForDelivery(delivered, deliveryBaseline)) {
+          announceDelivered(delivered);
+          return;
+        }
+      }
       const transfer = makeTransfer(delivered);
       // Durumu temizledik; bırakma bölgesi kendi durumunu yeniden kurmadan
       // gelen drop'u yok sayabilir. dragenter yeni bir overlay de kurabildiği
@@ -861,7 +1045,11 @@ window.addEventListener(
       await nextFrame();
       host = deliveryFallback(clientX, clientY);
       dispatchDrag(host, "dragleave", transfer, { clientX: -1, clientY: -1 });
-    });
+      if (prefersFileInputDelivery()) {
+        if (await waitForDelivery(delivered, deliveryBaseline)) announceDelivered(delivered);
+        else toast(`Maskelenmiş dosya ${SITE} yükleme alanı tarafından kabul edilmedi; gönderim durduruldu.`);
+      }
+    }).finally(() => cleanupDropUi(target, clientX, clientY).catch(() => {}));
   },
   true
 );
@@ -872,6 +1060,12 @@ function interceptFileInput(event) {
   // başındadır. Açık shadow root'taki dosya girdileri ancak böyle yakalanır.
   const input = event.composedPath?.()[0] || event.target;
   if (!(input instanceof HTMLInputElement) || input.type !== "file") return;
+  const replayCount = replayingFileInputs.get(input) || 0;
+  if (replayCount) {
+    if (replayCount === 1) replayingFileInputs.delete(input);
+    else replayingFileInputs.set(input, replayCount - 1);
+    return;
+  }
   const files = [...(input.files || [])];
   if (!shouldIntercept(files)) return;
 
@@ -879,14 +1073,15 @@ function interceptFileInput(event) {
   // Özgün dosyalar girdide bırakılmaz: sayfa bir başka yolla okumaya kalkarsa
   // elinde yalnızca boş bir liste bulmalı.
   input.value = "";
+  const deliveryBaseline = attachmentUiCount();
 
-  guardFiles(files, (delivered) => {
-    // Uzun tarama sırasında Gemini menüyü kapatıp file input'u yeniden
-    // oluşturabiliyor. Eski düğüme event göndermek sessizce hiçbir şey yapmaz;
-    // aynı türü kabul eden canlı girdiyi tekrar bul.
-    const targetInput = input.isConnected ? input : findCompatibleFileInput(delivered);
-    if (!replayFilesToInput(targetInput, delivered)) {
-      toast("Yükleme alanı değişti; maskelenmiş dosya Gemini'ye eklenemedi.");
+  void guardFiles(files, async (delivered) => {
+    // Önce kullanıcının seçtiği input denenir: doğrudan MAIN-world dinleyicisi
+    // DOM'dan ayrılmış olsa bile üzerinde kalır. Sonra güncel eşdeğeri aranır.
+    if (!deliverToFileInput(input, delivered) || !(await waitForDelivery(delivered, deliveryBaseline))) {
+      toast(`Yükleme alanı değişti; maskelenmiş dosya ${SITE} sitesine eklenemedi.`);
+    } else {
+      announceDelivered(delivered);
     }
   });
 }
@@ -921,7 +1116,23 @@ window.addEventListener(
     event.stopImmediatePropagation();
 
     const target = event.target?.isConnected ? event.target : document.activeElement || document.body;
-    guardFiles(files, (delivered) => {
+    const firstInput = prefersFileInputDelivery() ? findCompatibleFileInput(files) : null;
+    const deliveryBaseline = attachmentUiCount();
+    void guardFiles(files, async (delivered) => {
+      // Görsel yapıştırma da dosya yükleme hattıdır. Gemini/Claude sentetik
+      // ClipboardEvent'i yok sayarsa gerçek upload input'u üzerinden teslim et.
+      if (prefersFileInputDelivery() && deliverToFileInput(firstInput, delivered)) {
+        if (await waitForDelivery(delivered, deliveryBaseline)) {
+          announceDelivered(delivered);
+          return;
+        }
+      }
+      if (prefersFileInputDelivery() && replayDropInPage(target, delivered)) {
+        if (await waitForDelivery(delivered, deliveryBaseline)) {
+          announceDelivered(delivered);
+          return;
+        }
+      }
       const transfer = makeTransfer(delivered);
       let replay = null;
       try {
@@ -937,7 +1148,11 @@ window.addEventListener(
       if (replay && replay.clipboardData === transfer) {
         synthetic.add(replay);
         target.dispatchEvent(replay);
-        return;
+        if (!prefersFileInputDelivery()) return;
+        if (await waitForDelivery(delivered, deliveryBaseline)) {
+          announceDelivered(delivered);
+          return;
+        }
       }
       // ClipboardEvent taşınamadıysa dosya, aynı hedefe bırakma olayı olarak verilir.
       const fallback = new DragEvent("drop", {
@@ -948,6 +1163,10 @@ window.addEventListener(
       });
       synthetic.add(fallback);
       target.dispatchEvent(fallback);
+      if (prefersFileInputDelivery()) {
+        if (await waitForDelivery(delivered, deliveryBaseline)) announceDelivered(delivered);
+        else toast(`Maskelenmiş görsel ${SITE} yükleme alanı tarafından kabul edilmedi; gönderim durduruldu.`);
+      }
     });
   },
   true

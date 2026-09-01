@@ -280,15 +280,22 @@ test("içerik betiğine alınan motor modülleri kapalı kümede kalır", async 
 });
 
 // Sayfa dünyası, kullanıcının belgesindeki değerleri asla görmemeli.
-// Ortak DOM kanalına yalnızca politika ve "şu ad/boyuttaki dosya onaylandı"
-// anahtarları yazılır.
-test("yalıtılmış katman ortak DOM kanalına yalnız onay bilgisi yazar", async () => {
+// Ortak DOM kanalına yalnızca politika, onay anahtarı ve rastgele teslim
+// jetonları yazılır; belge içeriği/bulgular yazılmaz.
+test("yalıtılmış katman ortak DOM kanalına yalnız onay ve teslim jetonu yazar", async () => {
   const code = await source("guard/src/content/interceptor.js");
   const written = [...code.matchAll(/setAttribute\(\s*\n?\s*(\w+)/gu)].map((match) => match[1]);
   assert.ok(written.length >= 2, "sayfa dünyasına yazan çağrı bulunamadı");
   for (const attribute of written) {
     assert.ok(
-      ["CONFIG_ATTRIBUTE", "APPROVED_ATTRIBUTE"].includes(attribute),
+      [
+        "CONFIG_ATTRIBUTE",
+        "APPROVED_ATTRIBUTE",
+        "FILE_DELIVERY_TOKEN_ATTRIBUTE",
+        "DROP_DELIVERY_TOKEN_ATTRIBUTE",
+        "DROP_DELIVERY_POINT_ATTRIBUTE",
+        "DROP_DELIVERY_TARGET_ATTRIBUTE",
+      ].includes(attribute),
       `sayfa dünyasına ${attribute} yazılıyor`
     );
   }
@@ -304,7 +311,7 @@ test("yalıtılmış katman ortak DOM kanalına yalnız onay bilgisi yazar", asy
 // ağ katmanında engellenirdi.
 test("onay, maskelenmiş dosya sayfaya verilmeden önce yazılır", async () => {
   const code = await source("guard/src/content/interceptor.js");
-  const start = code.indexOf("const finish = (");
+  const start = code.indexOf("const finish = async (");
   assert.ok(start > 0, "finish fonksiyonu bulunamadı");
   // Gövdenin sonu: girintili kapanış. Dosyanın başka yerindeki bloklara kaymaz.
   const finish = code.slice(start, code.indexOf("\n  };", start));
@@ -378,11 +385,18 @@ test("onay kanalı dosya adındaki satır sonundan etkilenmez", () => {
   assert.ok(!decoded.has(other), "satır sonu ikinci bir onay uydurdu");
 });
 
-test("sürükleme durumu kesme anında temizlenir, teslimde yeniden kurulur", async () => {
+test("sürükleme perdesi başarı, iptal ve hata sonunda kesin olarak kapatılır", async () => {
   const code = await source("guard/src/content/interceptor.js");
-  // Kesme anında dragleave: iptal, hata ve meşgul yollarının hepsi tek noktadan
-  // kapanır, yoksa sayfanın "buraya bırak" katmanı ekranda kilitli kalır.
-  assert.match(code, /stopImmediatePropagation\(\);[\s\S]{0,900}dispatchDrag\(target, "dragleave"/u);
+  assert.match(code, /function cleanupDropUi\(/u);
+  assert.match(code, /guardFiles\(files,[\s\S]{0,2600}\.finally\(\(\) => cleanupDropUi/u,
+    "iptal/hata yolu terminal sürükleme temizliğine bağlanmıyor");
+  const cleanup = code.slice(code.indexOf("async function cleanupDropUi"), code.indexOf('window.addEventListener(\n  "drop"'));
+  assert.match(cleanup, /dispatchDrag\(overlay, "drop", empty/u, "görünen perdeye boş terminal drop gönderilmiyor");
+  assert.match(cleanup, /new CustomEvent\(DROP_CLEANUP_EVENT/u, "terminal olaylar MAIN dünyasına aktarılmıyor");
+  assert.match(cleanup, /dispatchDrag\(target, "dragleave"/u);
+  assert.match(cleanup, /dispatchDrag\(target, "dragend"/u);
+  assert.match(cleanup, /key: "Escape"/u);
+
   const delivery = code.slice(code.indexOf("guardFiles(files, async (delivered)"), code.indexOf("  },\n  true\n);"));
   const enterAt = delivery.indexOf('dispatchDrag(host, "dragenter"');
   const firstFrameAt = delivery.indexOf("await nextFrame()", enterAt);
@@ -399,26 +413,36 @@ test("sürükleme durumu kesme anında temizlenir, teslimde yeniden kurulur", as
   assert.match(delivery.slice(leaveAt), /clientX: -1, clientY: -1/u, "terminal dragleave pencere dışına çıkmıyor");
 });
 
-test("Gemini güvenli kopyayı canlı dosya girdisine teslim eder", async () => {
+test("Gemini ve Claude güvenli kopyayı MAIN-world dosya girdisine teslim eder", async () => {
   const code = await source("guard/src/content/interceptor.js");
+  const pageGuard = await source("guard/src/content/page-guard.js");
   assert.match(code, /function findCompatibleFileInput\(/u);
   assert.match(code, /Object\.getOwnPropertyDescriptor\(HTMLInputElement\.prototype, "files"\)/u,
     "dosya listesi React/Angular'ın görebileceği yerel setter ile yazılmıyor");
-  assert.match(code, /new Event\(type, \{ bubbles: true, composed: true \}\)/u);
+  assert.match(code, /new CustomEvent\(FILE_DELIVERY_EVENT, \{ bubbles: true, composed: true \}\)/u);
+  assert.match(pageGuard, /input\.dispatchEvent\(new Event\("input", \{ bubbles: true, composed: true \}\)\)/u);
+  assert.match(pageGuard, /input\.dispatchEvent\(new Event\("change", \{ bubbles: true, composed: true \}\)\)/u);
+  assert.match(pageGuard, /input\.addEventListener\(FILE_DELIVERY_EVENT, relaySafeFileInput, true\)/u,
+    "DOM'dan ayrılan özgün input'ta MAIN-world teslim dinleyicisi kalmıyor");
+  assert.match(code, /new CustomEvent\(DROP_DELIVERY_EVENT, \{ bubbles: true, composed: true \}\)/u);
+  assert.match(pageGuard, /for \(const type of \["dragenter", "dragover", "drop"\]\)/u,
+    "drag ile başlayan dosya sayfanın MAIN dünyasında tamamlanmıyor");
+  assert.match(pageGuard, /window\.addEventListener\(DROP_CLEANUP_EVENT, relayDropCleanup, true\)/u,
+    "iptal sonrası site drop perdesi MAIN dünyasında kapatılmıyor");
 
   const dropFlow = code.slice(
     code.indexOf("guardFiles(files, async (delivered)"),
     code.indexOf("function interceptFileInput")
   );
-  const geminiAt = dropFlow.indexOf('SITE_ID === "gemini"');
-  const inputAt = dropFlow.indexOf("replayFilesToInput(input, delivered)", geminiAt);
+  const mainDropAt = dropFlow.indexOf("replayDropInPage(host, delivered");
+  const inputAt = dropFlow.indexOf("deliverToFileInput(firstInput, delivered)");
   const dragAt = dropFlow.indexOf('dispatchDrag(host, "dragenter"');
-  assert.ok(geminiAt >= 0 && geminiAt < inputAt && inputAt < dragAt,
-    "Gemini file input teslimi genel sentetik drop yedeğinden önce denenmiyor");
+  assert.ok(mainDropAt >= 0 && mainDropAt < inputAt && inputAt < dragAt,
+    "Gemini/Claude MAIN drop → file input → genel drop yedek sırası korunmuyor");
 
   const inputFlow = code.slice(code.indexOf("function interceptFileInput"), code.indexOf('window.addEventListener("input"'));
-  assert.match(inputFlow, /input\.isConnected \? input : findCompatibleFileInput\(delivered\)/u,
-    "tarama sırasında Gemini'nin değiştirdiği file input yeniden bulunmuyor");
+  assert.match(inputFlow, /deliverToFileInput\(input, delivered\)/u,
+    "tarama sırasında ayrılan özgün input ve güncel eşdeğeri birlikte denenmiyor");
 });
 
 test("Guard bildirimi okunacak kadar kalır ve kullanıcı tarafından kapatılabilir", async () => {
@@ -436,6 +460,21 @@ test("akış kilidi sahiplik jetonuyla bırakılır", async () => {
   // Terk edilmiş bir akışın finally'si, sonradan başlamış akışın kilidini silmemeli.
   assert.doesNotMatch(code, /\bbusy\s*=\s*(true|false)/u, "çıplak busy bayrağı geri geldi");
   assert.match(code, /if \(activeFlow === flow\) activeFlow = null/u);
+});
+
+test("farklı sekmelerin motor işleri tek kuyrukta ve heartbeat ile yürür", async () => {
+  const offscreen = await source("guard/src/offscreen.js");
+  assert.match(offscreen, /let engineWork = Promise\.resolve\(\)/u);
+  assert.match(offscreen, /function enqueueEngineWork\(/u);
+  assert.match(offscreen, /engineWork\.then\(run, run\)/u);
+  assert.match(offscreen, /setInterval\(announceQueued, 10_000\)/u,
+    "kuyruk bekleyeni watchdog süresinden önce canlı tutan heartbeat yok");
+  for (const call of ["runScan", "runMask", "runTextScan", "runTextMask"]) {
+    assert.match(offscreen, new RegExp(`enqueueEngineWork\\(port, id, \\(\\) =>\\s*${call}\\(`, "u"),
+      `${call} ortak motor kuyruğundan geçmiyor`);
+  }
+  const panel = await source("guard/src/content/panel.js");
+  assert.match(panel, /queued: "Diğer sekmedeki tarama bekleniyor"/u);
 });
 
 test("oturum kimliği sekmeler arasında çakışmaz", async () => {
@@ -558,11 +597,13 @@ test("IME yazımı ve satır atlama gönderim sayılmaz", async () => {
   assert.match(code, /event\.key !== "Enter" \|\| event\.isComposing/u);
 });
 
-test("model taraması varsayılan kapalı", async () => {
+test("prompt modeli kurum politikasıyla zorunlu açık", async () => {
   const { DEFAULT_SETTINGS } = await import("../guard/src/settings.js");
   assert.equal(DEFAULT_SETTINGS.guardPrompts, true);
-  // Açıkken her gönderim offscreen belgeye uğrar; eşzamanlı karar mümkün olmaz.
-  assert.equal(DEFAULT_SETTINGS.promptModelScan, false);
+  assert.equal(DEFAULT_SETTINGS.promptModelScan, true);
+  assert.equal(coerceSettings({ promptModelScan: false }).promptModelScan, true);
+  const options = await source("guard/src/options/options.html");
+  assert.doesNotMatch(options, /id="promptModelScan"/u, "prompt modeli hâlâ kullanıcı seçeneği olarak gösteriliyor");
 });
 
 // ---------------------------------------------------------------- ikinci inceleme regresyonları

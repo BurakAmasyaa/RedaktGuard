@@ -21,17 +21,19 @@ Bütün bulgular otomatik seçilir                 (kullanıcı kararı yok)
         ↓
 musteri_redakte.docx üretilir
         ↓
-Sentetik drop olayı ChatGPT'ye verilir          (yalnızca maskeli dosya yüklenir)
+Güvenli drop/input olayı sitenin MAIN dünyasında üretilir
+        ↓
+Ek önizlemesi doğrulanır                        (yalnızca maskeli dosya yüklenir)
 ```
 
-Prompt metninde akış farklıdır çünkü karar milisaniyeler içinde verilmelidir:
+Prompt metninde bütün yerel katmanlar kurum politikasıyla zorunlu çalışır:
 
 ```
 Çalışan müşteri listesini prompt kutusuna yapıştırır (veya Enter'a basar)
         ↓
-Metin EŞZAMANLI taranır                         (2,6 ms / 37 KB — port yok)
+Metin yerel motorda taranır                     (desen + kişi/kurum/konum modeli)
         ↓
-Bulgu yoksa hiç karışılmaz                      (sıradan yapıştırma gecikmesiz)
+Bulgu yoksa metin değiştirilmeden devam eder
         ↓
 Bulgu varsa tamamı otomatik maskelenir
         ↓
@@ -54,7 +56,7 @@ MV3'ün üç kısıtı mimariyi belirledi.
 | Service worker 30 sn boşta ölür, içinde Worker açamaz | Motor **offscreen belgede** çalışır; 147 MB'lık model bellekte kalır |
 | İçerik betiği modül olamaz, tek dosya olmalı | İçerik betiği motoru **içeri almaz**, porta devreder ([tests/guard.test.js](../tests/guard.test.js) korur) |
 | `chrome.runtime` mesajları yalnız JSON taşır | Baytlar 512 KB'lık **base64 parçalar** hâlinde akar |
-| Gönderim tuşunda port gidiş-dönüşü göze batar | Prompt'un **hızlı katmanı içerik betiğinde**, eşzamanlı çalışır |
+| Farklı sekmeler aynı ağır motoru paylaşır | Office/PDF/OCR/model işleri **tek güvenli kuyrukta** yürür; bekleyen sekmeye heartbeat ilerlemesi gider |
 
 İki ayrı içerik betiği vardır ve ikisi de `document_start`'ta yüklenir:
 
@@ -63,17 +65,18 @@ MV3'ün üç kısıtı mimariyi belirledi.
   Sayfanın kendi betikleri henüz çalışmadığı için dinleyici sırada birincidir;
   `stopImmediatePropagation()` çağrıldığında dosya uygulamaya hiç ulaşmaz.
   Aynı betik prompt metnini de kapsar: `paste` (metin dalı), `keydown` (Enter) ve
-  gönder düğmesine `click`. Karar eşzamanlı verilir, bulgu yoksa akış hiç kesilmez;
-  bulgu varsa kullanıcıya seçim sunmadan maskelenir.
+  gönder düğmesine `click`. Prompt modeli zorunlu çalışır; bulgu yoksa metin
+  değiştirilmez, bulgu varsa kullanıcıya seçim sunmadan maskelenir.
 - **`content/page-guard.js` (MAIN)** — son emniyet. `fetch` ve
   `XMLHttpRequest.prototype.send` yamalanır. Araya girme başarısız olursa
   (arayüz değişti, bilmediğimiz bir yükleme yolu var) taranabilir bir dosya
   yine de ağa çıkamaz.
 
-İki dünya arasındaki kanal, `<html>` üzerindeki iki öznitelikten ibarettir:
-politika (`data-redakt-guard`) ve onaylanmış dosya anahtarları
-(`data-redakt-guard-approved`, `ad|boyut` biçiminde). Bulgular, değerler ve
-maskeleme eşlemesi oraya hiç geçmez — bu sınır testle korunur.
+İki dünya arasındaki kalıcı kanal, `<html>` üzerindeki politika
+(`data-redakt-guard`) ve onaylanmış dosya anahtarlarından
+(`data-redakt-guard-approved`, `ad|boyut` biçiminde) ibarettir. Teslim sırasında
+yalnız rastgele, kısa ömürlü röle jetonları eklenir. Bulgular, değerler ve
+maskeleme eşlemesi DOM'a hiç geçmez — bu sınır testle korunur.
 
 Kanalın `postMessage` değil de öznitelik olmasının sebebi bir yarıştır: sayfa
 `drop` olayını eşzamanlı işleyip yüklemeyi hemen başlatabilir, kuyruğa alınmış
@@ -198,7 +201,7 @@ Araç çubuğundaki simge ayarlar sayfasını açar.
 |---|---|---|
 | Kurumsal koruma | **zorunlu açık** | Guard, ağ emniyeti, prompt taraması ve taranamayan içerik engeli yerel ayarla kapatılamaz |
 | Otomatik maskeleme | **zorunlu açık** | Başarılı taramadaki bütün bulgular seçilir; maskesiz gönderme seçeneği yoktur |
-| Promptta model de çalışsın | **kapalı** | Kişi/kurum adlarını da yakalar; karar eşzamanlı verilemediği için her gönderimde tarama ekranı görünür ve işlem saniyeler uzar |
+| Prompt modeli | **zorunlu açık** | Her yapıştırma/gönderimde kişi, kurum ve konum modeli dahil bütün yerel katmanlar çalışır; kapatma seçeneği yoktur |
 | Kural sunucusu | isteğe bağlı | Redakt On-Premise adresi; boşsa yerel katmanlar çalışır, adres verilmişken ulaşılamaz/bayat durumdaysa gönderim durur |
 | Tarama profili | Dengeli | Hızlı / Dengeli / Kapsamlı |
 

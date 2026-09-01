@@ -24,6 +24,25 @@ export const GUARD_MARK = "redakt-guard/v1";
 export const CONFIG_ATTRIBUTE = "data-redakt-guard";
 export const APPROVED_ATTRIBUTE = "data-redakt-guard-approved";
 
+// Maskelenmiş FileList isolated dünyada hazırlanır, fakat Gemini/Claude'un
+// framework dinleyicileri olayı sayfanın kendi (MAIN) dünyasında bekleyebilir.
+// İçerik betiği bu olayı gerçek file input üzerinde tetikler; page-guard aynı
+// güvenli FileList için yerel input/change olaylarını üretip jetonu onaylar.
+export const FILE_DELIVERY_EVENT = "redakt-guard/file-delivery";
+export const FILE_DELIVERY_TOKEN_ATTRIBUTE = "data-redakt-guard-delivery";
+export const FILE_DELIVERY_ACK_ATTRIBUTE = "data-redakt-guard-delivery-ack";
+
+// Drag/drop ile başlayan akışlarda Gemini ve Claude dosyayı kendi MAIN-world
+// DragEvent zincirinden bekliyor. Güvenli FileList geçici bir file input'ta
+// tutulur; sayfa köprüsü yalnız maskelenmiş kopyayla yerel drag olayları üretir.
+export const DROP_DELIVERY_EVENT = "redakt-guard/drop-delivery";
+export const DROP_CLEANUP_EVENT = "redakt-guard/drop-cleanup";
+export const DROP_DELIVERY_TOKEN_ATTRIBUTE = "data-redakt-guard-drop-delivery";
+export const DROP_DELIVERY_TARGET_ATTRIBUTE = "data-redakt-guard-drop-target";
+export const DROP_DELIVERY_POINT_ATTRIBUTE = "data-redakt-guard-drop-point";
+export const DROP_DELIVERY_ACK_ATTRIBUTE = "data-redakt-guard-drop-ack";
+export const DROP_DELIVERY_ACTIVE_ATTRIBUTE = "data-redakt-guard-drop-active";
+
 export const MSG = Object.freeze({
   ensureEngine: "guard/ensure-engine",
   restartEngine: "guard/restart-engine",

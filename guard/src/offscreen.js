@@ -12,6 +12,55 @@ const inbox = new Map();
 // hem de sağlıklı ama uzun süren hazırlığın sessizlik sanılmasını önler.
 const relaySessions = new Map();
 
+// Office/PDF/OCR bağlamları ve yerel model aynı offscreen belgede yaşar.
+// Farklı sekmeler işleri paralel başlatırsa bir sekmenin ağır OCR işi diğerinin
+// model/session durumuyla yarışabiliyor; ardından watchdog bütün belgeyi
+// yeniden başlatıp sağlıklı sekmeleri de düşürüyor. Bütün motor işleri tek
+// güvenli kuyruktan geçer. Bekleme heartbeat'i 45 sn watchdog'un kuyruğu
+// "motor sustu" sanmasını engeller.
+let engineWork = Promise.resolve();
+let engineBusy = false;
+let waitingJobs = 0;
+
+function enqueueEngineWork(port, id, task, { requireSession = true } = {}) {
+  const queued = engineBusy || waitingJobs > 0;
+  waitingJobs += 1;
+  let heartbeat = null;
+  const announceQueued = () => {
+    if (!port || !id || (requireSession && !inbox.has(id))) {
+      if (heartbeat) clearInterval(heartbeat);
+      heartbeat = null;
+      return;
+    }
+    send(port, {
+      cmd: CMD.progress,
+      id,
+      phase: "queued",
+      detail: "Başka bir sekmedeki güvenli tarama bitince otomatik devam edecek.",
+    });
+  };
+  if (queued) {
+    announceQueued();
+    heartbeat = setInterval(announceQueued, 10_000);
+  }
+
+  const run = async () => {
+    waitingJobs = Math.max(0, waitingJobs - 1);
+    if (heartbeat) clearInterval(heartbeat);
+    heartbeat = null;
+    if (requireSession && !inbox.has(id)) return;
+    engineBusy = true;
+    try {
+      return await task();
+    } finally {
+      engineBusy = false;
+    }
+  };
+  const scheduled = engineWork.then(run, run);
+  engineWork = scheduled.catch(() => {});
+  return scheduled;
+}
+
 // Motor tarafının izi. İki taraf da aynı listeyi oku-değiştir-yaz yapınca
 // birbirini eziyordu; artık tek yazıcı var: işaretler background'a bildirilir.
 // İçerik veya bulgu yazılmaz, yalnız adım adı.
@@ -148,8 +197,9 @@ async function runMask(port, id, selectedIds) {
 }
 
 async function runTextScan(port, id, text, useModel) {
-  const controller = new AbortController();
-  inbox.set(id, { filename: "prompt", size: 0, parts: [], controller });
+  const entry = inbox.get(id);
+  if (!entry) return;
+  const { controller } = entry;
   try {
     const { settings, ruleCache } = await readScanConfiguration();
     const result = await scanTextUnit({
@@ -212,17 +262,25 @@ chrome.runtime.onConnect.addListener((port) => {
       }
       case CMD.scanEnd:
         mark("scanEnd alındı, tarama başlıyor");
-        runScan(port, id);
+        enqueueEngineWork(port, id, () => runScan(port, id));
         break;
       case CMD.scanText:
         owned.add(id);
-        runTextScan(port, id, String(message.text || ""), message.useModel);
+        inbox.set(id, {
+          filename: "prompt",
+          size: 0,
+          parts: [],
+          controller: new AbortController(),
+        });
+        enqueueEngineWork(port, id, () => runTextScan(port, id, String(message.text || ""), message.useModel));
         break;
       case CMD.maskText:
-        runTextMask(port, id, Array.isArray(message.selectedIds) ? message.selectedIds : []);
+        enqueueEngineWork(port, id, () =>
+          runTextMask(port, id, Array.isArray(message.selectedIds) ? message.selectedIds : [])
+        );
         break;
       case CMD.mask:
-        runMask(port, id, Array.isArray(message.selectedIds) ? message.selectedIds : []);
+        enqueueEngineWork(port, id, () => runMask(port, id, Array.isArray(message.selectedIds) ? message.selectedIds : []));
         break;
       case CMD.release:
         owned.delete(id);
@@ -249,26 +307,25 @@ chrome.runtime.onConnect.addListener((port) => {
 // düşerse (12 kat yavaş) bunun görünmesi gerekir.
 // Önceki oturum tarama ortasında çöktüyse GPU atlanır. Yavaş ama çalışan yol,
 // hiç çalışmayana yeğdir; kullanıcı ayarlar sayfasında hangisinde olduğunu görür.
-request(MSG.readEngineState, "Motor durumu okunamadı.")
-  .then((state) => Boolean(state.crashed))
-  .catch((error) => {
-    // Durum okunamıyorsa hız yerine güvenilir yolu seç; hatayı izde görünür tut.
-    mark("motor durumu okunamadı", String(error?.message || error).slice(0, 160));
-    return true;
-  })
-  .then((safeMode) => {
+enqueueEngineWork(null, null, async () => {
+  const safeMode = await request(MSG.readEngineState, "Motor durumu okunamadı.")
+    .then((state) => Boolean(state.crashed))
+    .catch((error) => {
+      // Durum okunamıyorsa hız yerine güvenilir yolu seç; hatayı izde görünür tut.
+      mark("motor durumu okunamadı", String(error?.message || error).slice(0, 160));
+      return true;
+    });
     mark("ısınma başlıyor", safeMode ? "güvenli yol (wasm)" : "normal");
-    return warmUpEngine(safeMode ? "wasm" : null, (progress) => {
+    await warmUpEngine(safeMode ? "wasm" : null, (progress) => {
       for (const [port, owned] of relaySessions) {
         for (const id of owned) send(port, { ...progress, cmd: CMD.progress, id });
       }
-    }).then(
-      (device) => {
-        mark("ısınma bitti", device || "bilinmiyor");
-        request(MSG.writeEngineDevice, "Çalışan motor kaydedilemedi.", { device: device || "bilinmiyor" }).catch(
-          (error) => mark("çalışan motor kaydedilemedi", String(error?.message || error).slice(0, 160))
-        );
-      },
-      (error) => mark("ısınma başarısız", String(error?.message || error).slice(0, 160))
-    );
-  });
+    }).then(async (device) => {
+      mark("ısınma bitti", device || "bilinmiyor");
+      await request(MSG.writeEngineDevice, "Çalışan motor kaydedilemedi.", { device: device || "bilinmiyor" }).catch(
+        (error) => mark("çalışan motor kaydedilemedi", String(error?.message || error).slice(0, 160))
+      );
+    });
+}, { requireSession: false }).catch((error) => {
+  mark("ısınma başarısız", String(error?.message || error).slice(0, 160));
+});
