@@ -1,0 +1,90 @@
+// Eklentinin parçaları arasındaki tek sözleşme.
+// İçerik betiği (isolated), sayfa koruması (main), service worker ve
+// offscreen belge yalnızca buradaki adları kullanır.
+
+// İçerik betiği bu adla BAĞLANIR; bağlantıyı service worker karşılar.
+export const ENGINE_PORT = "redakt-guard-engine";
+
+// Service worker'ın offscreen belgeye açtığı iç port. İçerik betiğinin
+// doğrudan offscreen belgeye bağlanabildiği MV3'te garanti değildir; bu yüzden
+// akış her zaman service worker üzerinden röle edilir.
+export const ENGINE_RELAY_PORT = "redakt-guard-engine-relay";
+
+// Sayfa dünyasındaki betikle konuşurken kullanılan işaret.
+// Gizli değildir: sayfa özgün dosyayı hiçbir zaman görmediği için
+// bu kanalın taklit edilmesi saldırgana bir şey kazandırmaz.
+export const GUARD_MARK = "redakt-guard/v1";
+
+// Ayar ve onaylar iki dünyanın ortak DOM'una yazılır, postMessage ile değil.
+// Sebep bir yarış: sayfa "drop" olayını eşzamanlı işleyip yüklemeyi hemen
+// başlatabilir; kuyruğa alınmış bir mesaj o ana yetişmez ve kendi maskelediğimiz
+// dosya engellenir. Öznitelik okuması eşzamanlıdır, bu yarışı ortadan kaldırır.
+// Değerler JSON'dur: dosya adı satır sonu içerebildiği için düz birleştirme
+// hem kendi onayımızı bozar hem de sahte onay üretmeye izin verirdi.
+export const CONFIG_ATTRIBUTE = "data-redakt-guard";
+export const APPROVED_ATTRIBUTE = "data-redakt-guard-approved";
+
+export const MSG = Object.freeze({
+  ensureEngine: "guard/ensure-engine",
+  restartEngine: "guard/restart-engine",
+  readTrace: "guard/read-trace",
+  mark: "guard/mark",
+  readSettings: "guard/read-settings",
+  writeSettings: "guard/write-settings",
+  readRules: "guard/read-rules",
+  readEngineState: "guard/read-engine-state",
+  writeEngineDevice: "guard/write-engine-device",
+  auditMasking: "guard/audit-masking",
+  refreshRules: "guard/refresh-rules",
+  activity: "guard/activity",
+});
+
+export const CMD = Object.freeze({
+  ready: "ready",
+  scanBegin: "scan-begin",
+  scanChunk: "scan-chunk",
+  scanEnd: "scan-end",
+  scanResult: "scan-result",
+  scanText: "scan-text",
+  maskText: "mask-text",
+  maskTextResult: "mask-text-result",
+  mask: "mask",
+  maskBegin: "mask-begin",
+  maskChunk: "mask-chunk",
+  maskEnd: "mask-end",
+  progress: "progress",
+  failure: "failure",
+  release: "release",
+});
+
+// Sayfa dünyasından geri gelen tek mesaj: bir yükleme durduruldu.
+export const PAGE = Object.freeze({ blocked: "blocked" });
+
+// Motorun açabildiği türler. Bu listenin dışı taranamaz; taranamayan
+// dosyaya ne yapılacağı ayarlardaki blockUnscannable ile belirlenir.
+export const SCANNABLE_EXTENSIONS = Object.freeze(["docx", "xlsx", "pdf", "txt", "jpg", "jpeg", "png"]);
+
+export const MAX_SCANNABLE_BYTES = 50 * 1024 * 1024;
+
+// Base64'e çevrilen parça boyutu. 512 KB ham veri ~683 KB metin eder;
+// chrome.runtime mesajlaşması bu ölçekte sorunsuz çalışır.
+export const CHUNK_BYTES = 512 * 1024;
+
+// Motordan bu süre boyunca HİÇ mesaj gelmezse takılmış sayılır. Model ilk kez
+// hazırlanırken bile ilerleme sürekli akar (yüzde yüzde), yani bu kadar tam
+// sessizlik ancak offscreen belge kilitlendiğinde olur.
+export const ENGINE_SILENCE_TIMEOUT_MS = 45_000;
+
+export function extensionOf(filename) {
+  const match = /\.([^.]+)$/u.exec(String(filename || "").toLowerCase());
+  return match ? match[1] : "";
+}
+
+export function isScannable(filename) {
+  return SCANNABLE_EXTENSIONS.includes(extensionOf(filename));
+}
+
+// Sayfa dünyasındaki koruma yalnız ad ve boyutu görebilir; onay anahtarı bu ikisidir.
+export function fileKey(name, size) {
+  return `${String(name || "")}|${Number(size) || 0}`;
+}

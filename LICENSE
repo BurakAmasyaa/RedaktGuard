@@ -1,0 +1,36 @@
+Telif Hakkı (c) 2026 Siskon. Tüm hakları saklıdır.
+
+TESCİLLİ YAZILIM — ŞİRKET İÇİ KULLANIM
+
+Bu depodaki kaynak kod, yapılandırma ve dokümantasyon ("Yazılım") Siskon'un
+tescilli mülkiyetidir ve açık kaynak lisansı altında dağıtılmamaktadır.
+
+İzin verilenler
+---------------
+Yazılım, Siskon ile geçerli bir lisans veya hizmet sözleşmesi bulunan kurumlarda,
+o sözleşmenin kapsadığı sunucular üzerinde kurulabilir, çalıştırılabilir ve
+kurumun kendi ihtiyacına göre yapılandırılabilir.
+
+İzin verilmeyenler
+------------------
+Yazılımın tamamının veya bir bölümünün; Siskon'un önceden yazılı izni olmaksızın
+kopyalanması, dağıtılması, yayımlanması, alt lisanslanması, satılması,
+kiralanması, tersine mühendisliğe tabi tutulması veya türev çalışma üretilmesi
+yasaktır.
+
+Üçüncü taraf bileşenler
+-----------------------
+Yazılım, kendi lisansları altında dağıtılan üçüncü taraf bileşenler içerir.
+Bunlar bu lisansın kapsamı dışındadır ve kendi koşullarına tabidir. Doğal dil
+işleme modeli, `akdeniz27/bert-base-turkish-cased-ner` temel alınarak
+dönüştürülmüştür (kaynak model kartındaki beyana göre MIT).
+
+Garanti reddi
+-------------
+YAZILIM "OLDUĞU GİBİ" SUNULMAKTADIR; AÇIK VEYA ZIMNİ HİÇBİR GARANTİ VERİLMEZ.
+YAZILIMIN KULLANIMINDAN DOĞAN HİÇBİR ZARARDAN SISKON SORUMLU TUTULAMAZ.
+
+Yazılımın amacı belgelerdeki kişisel verilerin maskelenmesine yardımcı olmaktır;
+kullanımı, ilgili mevzuata (KVKK dâhil) uyum sorumluluğunu kullanan kurumdan
+kaldırmaz. Maskelenmiş çıktının paylaşılmadan önce gözden geçirilmesi kullanan
+kurumun sorumluluğundadır.

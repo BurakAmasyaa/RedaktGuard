@@ -1,0 +1,25 @@
+{
+  "name": "redakt-guard",
+  "version": "1.0.2",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node guard/build.mjs",
+    "test": "node --test tests/guard.test.js"
+  },
+  "dependencies": {
+    "@huggingface/transformers": "^3.8.1",
+    "jszip": "^3.10.1",
+    "pdf-lib": "^1.17.1",
+    "pdfjs-dist": "^6.2.108",
+    "tesseract.js": "^7.0.0",
+    "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"
+  },
+  "devDependencies": {
+    "@napi-rs/canvas": "^1.0.5",
+    "vite": "^7.1.1"
+  },
+  "overrides": {
+    "sharp": "0.35.3"
+  }
+}
