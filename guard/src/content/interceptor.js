@@ -1274,4 +1274,7 @@ configurePageGuard();
 setTimeout(() => {
   if (settingsReady && !settings.enabled) return;
   sendRuntimeMessageBestEffort({ type: MSG.ensureEngine });
+// Rozetteki yeşil nokta: "bu sekmede Guard yüklü". Yoksa sekme uzantıdan önce
+// açılmıştır ve koruma o sekmede hiç çalışmıyordur.
+sendRuntimeMessageBestEffort({ type: MSG.contentReady });
 }, 1500);

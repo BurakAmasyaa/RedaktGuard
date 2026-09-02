@@ -38,16 +38,17 @@ git clone https://github.com/BurakAmasyaa/RedaktGuard.git
 
 1. ChatGPT'yi açın, 2-3 saniye bekleyin (motor arka planda ısınır).
 2. Redakt Guard simgesine tıklayın → ayarlar sayfası açılır.
-3. **Tarama** bölümünde yeşil "**WebGPU üzerinde çalışıyor**" satırını görmelisiniz.
+3. Korunan sekmede simgenin üstünde **yeşil nokta** görünmeli (maskeleme yapıldıkça sayıya döner).
+4. **Tarama** bölümünde yeşil "**WebGPU üzerinde çalışıyor**" satırını görmelisiniz.
    Sarı "**wasm**" yazıyorsa da çalışır, yalnız daha yavaştır (aşağıya bakın).
-4. Sohbete içinde T.C. kimlik numarası geçen bir belge sürükleyin: panel açılmalı,
+5. Sohbete içinde T.C. kimlik numarası geçen bir belge sürükleyin: panel açılmalı,
    bulgular listelenmeli ve sohbete `_redakte` ekli maskeli kopya iliştirilmeli.
 
 ### Sık karşılaşılan durumlar
 
 | Belirti | Sebep | Çözüm |
 |---|---|---|
-| Panel hiç açılmıyor, dosya maskelenmeden gidiyor | Sekme uzantıdan önce açılmış ya da Edge'de site erişimi "tıklandığında" | Sekmeyi yenileyin; Edge'de Site erişimi → Tüm sitelerde |
+| Panel hiç açılmıyor, dosya maskelenmeden gidiyor | Sekme uzantıdan önce açılmış ya da Edge'de site erişimi "tıklandığında" | Simgeye bakın: **yeşil nokta yoksa Guard o sekmede yüklü değil** → sekmeyi yenileyin; Edge'de Site erişimi → Tüm sitelerde |
 | Panel "Tarama motoru hazırlanıyor"da uzun bekliyor | 147 MB model ilk kullanımda hazırlanıyor | Bir kerelik; sonraki taramalar saniyeler sürer |
 | Ayarlarda "Model wasm üzerinde çalışıyor" | Tarayıcı WebGPU vermemiş (`chrome://gpu` / `edge://gpu`) | Çalışır, 12 kat yavaş. GPU sürücüsü güncelse WebGPU kendiliğinden devreye girer |
 | "Motor yanıt vermedi; yeniden kuruldu" | Motor kilitlendi, kendini toparladı | Dosyayı tekrar bırakın |

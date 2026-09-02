@@ -867,3 +867,16 @@ test("teslim anında dosya girdisi yoksa yükleme menüsü açılıp taze girdi 
   assert.ok(calls.length >= 3, `çağrı yeri sayısı beklenmedik: ${calls.length}`);
   assert.doesNotMatch(code, /(?<!await )deliverToFileInput\((firstInput|input), delivered\)/u, "beklenmeyen deliverToFileInput çağrısı var");
 });
+
+// Uzantı yüklenmeden açık kalan sekmeye içerik betiği girmez: panel yok, uyarı
+// yok, dosya maskelenmeden gider — sahada Gemini'de tam bu yaşandı. Kullanıcı
+// bunu simgeden görebilmeli: nokta yoksa Guard o sekmede yok.
+test("içerik betiği yüklendiğini bildirir ve rozet bunu gösterir", async () => {
+  const interceptor = await source("guard/src/content/interceptor.js");
+  assert.match(interceptor, /type: MSG\.contentReady/u, "içerik betiği hazır olduğunu bildirmiyor");
+  const background = await source("guard/src/background.js");
+  assert.match(background, /case MSG\.contentReady:/u);
+  assert.match(background, /ready \? "●" : ""/u, "hazır sekme rozette görünmüyor");
+  // Sekme yenilenince işaret düşmeli; içerik betiği yeniden bildirir.
+  assert.match(background, /delete ready\[tabId\]/u);
+});

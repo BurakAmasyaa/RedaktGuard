@@ -202,10 +202,29 @@ async function readActivity() {
   return stored?.[ACTIVITY_KEY] || {};
 }
 
-function paintBadge(tabId, count) {
-  const text = count > 0 ? (count > 99 ? "99+" : String(count)) : "";
+// Uzantı yüklenmeden önce açılmış sekmeye içerik betiği girmez ve hiçbir şey
+// olmaz — ne panel, ne uyarı; dosya maskelenmeden gider. Sahada tam bu yaşandı.
+// Rozet bu yüzden üç şeyden birini söyler: boş = bu sekmede Guard YOK (sekmeyi
+// yenile), yeşil nokta = yüklü ve bekliyor, sayı = bu sekmede yapılan maskeleme.
+const READY_KEY = "guard.ready";
+
+async function readReady() {
+  const stored = await chrome.storage.session.get(READY_KEY);
+  return stored?.[READY_KEY] || {};
+}
+
+function paintBadge(tabId, count, ready = false) {
+  const text = count > 0 ? (count > 99 ? "99+" : String(count)) : ready ? "●" : "";
   chrome.action.setBadgeText({ tabId, text }).catch(() => {});
-  chrome.action.setBadgeBackgroundColor({ tabId, color: "#1f6feb" }).catch(() => {});
+  chrome.action.setBadgeBackgroundColor({ tabId, color: count > 0 ? "#1f6feb" : "#1a7f37" }).catch(() => {});
+}
+
+async function markReady(tabId) {
+  if (typeof tabId !== "number") return;
+  const [ready, activity] = await Promise.all([readReady(), readActivity()]);
+  ready[tabId] = true;
+  await chrome.storage.session.set({ [READY_KEY]: ready });
+  paintBadge(tabId, activity[tabId] || 0, true);
 }
 
 async function recordActivity(tabId, amount) {
@@ -213,10 +232,15 @@ async function recordActivity(tabId, amount) {
   const activity = await readActivity();
   activity[tabId] = (activity[tabId] || 0) + amount;
   await chrome.storage.session.set({ [ACTIVITY_KEY]: activity });
-  paintBadge(tabId, activity[tabId]);
+  paintBadge(tabId, activity[tabId], true);
 }
 
 async function forgetActivity(tabId) {
+  const ready = await readReady();
+  if (tabId in ready) {
+    delete ready[tabId];
+    await chrome.storage.session.set({ [READY_KEY]: ready });
+  }
   const activity = await readActivity();
   if (!(tabId in activity)) return;
   delete activity[tabId];
@@ -279,6 +303,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         return { ok: true, ...(await recordAudit(message.event)) };
       case MSG.refreshRules:
         return { ok: true, ...(await refreshRules()) };
+      case MSG.contentReady:
+        await markReady(sender?.tab?.id);
+        return { ok: true };
       case MSG.activity:
         await recordActivity(sender?.tab?.id, Number(message.count) || 0);
         return { ok: true };

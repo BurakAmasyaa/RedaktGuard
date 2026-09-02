@@ -56,6 +56,8 @@ export const MSG = Object.freeze({
   auditMasking: "guard/audit-masking",
   refreshRules: "guard/refresh-rules",
   activity: "guard/activity",
+  // İçerik betiği korunan sayfada yüklenince bildirir; rozet "bu sekmede aktif" olur.
+  contentReady: "guard/content-ready",
 });
 
 export const CMD = Object.freeze({
