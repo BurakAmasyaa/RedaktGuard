@@ -379,6 +379,10 @@ function aggregateEntities(entities) {
   });
 }
 
+// En az iki bitişik harf: bir adın taşıyabileceği en küçük iz. Rakam, noktalama
+// ve tek harften oluşan birimler modele gitmez.
+const NAME_BEARING = /\p{L}{2,}/u;
+
 export async function detectNamedEntities(texts, {
   onProgress,
   profile = "balanced",
@@ -401,6 +405,11 @@ export async function detectNamedEntities(texts, {
   for (let unitIndex = 0; unitIndex < sourceTexts.length; unitIndex += 1) {
     const text = sourceTexts[unitIndex];
     if (!text.trim()) continue;
+    // Harf içermeyen birim (tutar, tarih, kod, tek harf) kişi ya da kurum adı
+    // taşıyamaz; modele gitmesi yalnız zaman harcar. Tabloda birimlerin çoğu
+    // böyledir. Desen katmanı (T.C. no, IBAN, kart) bu birimleri zaten ayrıca
+    // tarar; burada yalnız model atlanır.
+    if (!NAME_BEARING.test(text)) continue;
     const units = unitsByText.get(text);
     if (units) units.push(unitIndex);
     else unitsByText.set(text, [unitIndex]);
