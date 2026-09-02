@@ -856,15 +856,22 @@ async function materializeUploadInput(files) {
     !button.disabled &&
     UPLOAD_TRIGGER_LABEL.test(`${button.getAttribute("aria-label") || ""} ${button.textContent || ""}`)
   );
-  if (!trigger) return null;
+  if (!trigger) return { input: null, opened: false };
   trigger.click();
   // Menü animasyonla açılıyor; girdi birkaç kare sonra DOM'a giriyor.
   for (let frame = 0; frame < 8; frame += 1) {
     await nextFrame();
     const fresh = findCompatibleFileInput(files);
-    if (fresh) return fresh;
+    if (fresh) return { input: fresh, opened: true };
   }
-  return null;
+  return { input: null, opened: true };
+}
+
+// Bizim açtığımız menü teslim olmadıysa açık kalmasın.
+function dismissOpenMenu() {
+  const escape = new KeyboardEvent("keydown", { key: "Escape", code: "Escape", bubbles: true, cancelable: true, composed: true });
+  synthetic.add(escape);
+  (document.activeElement || document.body)?.dispatchEvent(escape);
 }
 
 async function deliverToFileInput(firstInput, files) {
@@ -872,16 +879,24 @@ async function deliverToFileInput(firstInput, files) {
   const candidates = [firstInput, findCompatibleFileInput(files)].filter(Boolean);
   // Tarama sürerken menü kapanıp girdiyi öldürmüş olabilir; bağlı aday yoksa
   // taze bir girdi kurdur.
+  let openedMenu = false;
   if (!candidates.some((input) => input.isConnected)) {
     const fresh = await materializeUploadInput(files);
-    if (fresh) candidates.push(fresh);
+    openedMenu = fresh.opened;
+    if (fresh.input) candidates.unshift(fresh.input);
   }
+  // Bağlı adaylar önce. Ölü girdi, page-guard'ın DOM'dan düşen input'ta da
+  // kalan doğrudan dinleyicisi sayesinde "ack" verebiliyor; o zaman teslim
+  // "başarılı" sayılıp taze girdi hiç denenmiyordu — ek de oluşmuyordu.
+  // Ölü aday ancak bağlı aday kalmayınca denenir (sort kararlı, sıra korunur).
+  candidates.sort((left, right) => Number(right.isConnected) - Number(left.isConnected));
   const tried = new Set();
   for (const input of candidates) {
     if (tried.has(input)) continue;
     tried.add(input);
     if (replayFilesToInput(input, files)) return true;
   }
+  if (openedMenu) dismissOpenMenu();
   return false;
 }
 

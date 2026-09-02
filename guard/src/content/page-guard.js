@@ -9,6 +9,7 @@
 // taklit edilmesi saldırgana bir şey kazandırmaz; kanal gizli değildir.
 
 import {
+  APPROVAL_WINDOW_MS,
   BINARY_BODY_FLOOR_BYTES,
   LARGE_BINARY_BYTES,
   APPROVED_ATTRIBUTE,
@@ -25,7 +26,7 @@ import {
   FILE_DELIVERY_TOKEN_ATTRIBUTE,
   GUARD_MARK,
   PAGE,
-  sizeKey,
+  parseSizeKey,
 } from "../protocol.js";
 
 const originalFetch = window.fetch;
@@ -188,11 +189,25 @@ function filesIn(body) {
 // Adsız ikili gövdenin bayt uzunluğu. Siteler dosyayı kendi adını taşımayan
 // bir gövdeye sarıp imzalı URL'e PUT edebiliyor; o yol yalnız File ve FormData
 // aranırsa tamamen görünmez kalır ve maskelenmemiş belge ağa çıkar.
+// Belge imzaları: %PDF-, PK (docx/xlsx/zip), OLE (doc/xls), {\rtf. Görsel
+// imzaları bilerek yok; DOCUMENT_MIME ile aynı sınırda kalır.
+function sniffsDocument(head) {
+  if (!head || head.length < 4) return false;
+  const [a, b, c, d] = head;
+  if (a === 0x25 && b === 0x50 && c === 0x44 && d === 0x46) return true; // %PDF
+  if (a === 0x50 && b === 0x4b && c === 0x03 && d === 0x04) return true; // PK..
+  if (a === 0xd0 && b === 0xcf && c === 0x11 && d === 0xe0) return true; // OLE
+  if (a === 0x7b && b === 0x5c && c === 0x72 && d === 0x74) return true; // {\rt
+  return false;
+}
+
 function binaryBodyProbe(body) {
   if (!body || body instanceof File) return null;
-  if (body instanceof Blob) return { size: body.size, type: String(body.type || "") };
-  if (body instanceof ArrayBuffer) return { size: body.byteLength, type: "" };
-  if (ArrayBuffer.isView(body)) return { size: body.byteLength, type: "" };
+  if (body instanceof Blob) return { size: body.size, type: String(body.type || ""), head: null };
+  if (body instanceof ArrayBuffer) return { size: body.byteLength, type: "", head: new Uint8Array(body, 0, Math.min(8, body.byteLength)) };
+  if (ArrayBuffer.isView(body)) {
+    return { size: body.byteLength, type: "", head: new Uint8Array(body.buffer, body.byteOffset, Math.min(8, body.byteLength)) };
+  }
   if (body instanceof FormData) {
     for (const value of body.values()) {
       if (value instanceof Blob && !(value instanceof File)) return { size: value.size, type: String(value.type || "") };
@@ -207,7 +222,7 @@ const DOCUMENT_MIME = /pdf|msword|officedocument|vnd\.ms-|rtf|octet-stream|zip|x
 // Engellenmesi gereken ilk dosyanın adını döndürür, yoksa null.
 // Gövdede dosya yoksa tek bir instanceof kontrolüyle çıkar: bu yol her
 // fetch çağrısında işlediği için ucuz kalmalı.
-function offender(body) {
+function offender(body, sniffedDocument = false) {
   const files = filesIn(body);
   const config = readJson(CONFIG_ATTRIBUTE);
   if (!config?.active) return null;
@@ -228,11 +243,19 @@ function offender(body) {
     // engelliyorduk — temiz PDF'te bile "adsız yükleme" uyarısı çıkıyordu.
     const probe = binaryBodyProbe(body);
     if (!config.blockUnscannable || !probe || probe.size < BINARY_BODY_FLOOR_BYTES) return null;
-    const anyApproved = [...approved].some((key) => key.startsWith("#"));
-    if (anyApproved) return null;
-    // Telemetri ile belge ayrımı: belge MIME'ı taşıyorsa ya da gerçekten büyükse
-    // yükleme sayılır; küçük ve türsüz/protobuf gövde sayfanın kendi trafiğidir.
-    const documentLike = DOCUMENT_MIME.test(probe.type);
+    // Onay süreli ve boyutludur: son 10 dakikada teslim ettiğimiz bir dosyadan
+    // büyük olmayan gövde geçer (parçalı yükleme dosya boyutunu aşmaz). Sekme
+    // ömrü boyunca "bir kez onaylandı, artık her şey geçer" olmaz.
+    const now = Date.now();
+    const covered = [...approved].some((key) => {
+      const approval = parseSizeKey(key);
+      return approval && now - approval.at < APPROVAL_WINDOW_MS && probe.size <= approval.size;
+    });
+    if (covered) return null;
+    // Telemetri ile belge ayrımı: MIME belge diyorsa, ilk baytlar belge imzasıysa
+    // ya da gövde gerçekten büyükse yükleme sayılır; küçük ve türsüz gövde
+    // sayfanın kendi trafiğidir.
+    const documentLike = DOCUMENT_MIME.test(probe.type) || sniffedDocument || sniffsDocument(probe.head);
     if (!documentLike && probe.size < LARGE_BINARY_BYTES) return null;
     return "adsız yükleme";
   }
@@ -256,10 +279,32 @@ function announce(filename) {
   window.postMessage({ __redaktGuard: GUARD_MARK, type: PAGE.blocked, filename }, location.origin);
 }
 
+// Türsüz, küçük, adsız Blob eşzamanlı koklanamaz; fetch zaten söz döndürdüğü
+// için ilk 8 baytı okuyup karar vermek mümkün. Yalnız zorlama açıkken ve
+// karar gerçekten bu baytlara bağlıyken yapılır — geri kalan her istek
+// eşzamanlı yoldan geçer. XHR eşzamanlıdır, orada koklama yoktur.
+function needsAsyncSniff(body) {
+  if (!(body instanceof Blob) || body instanceof File || body.type) return false;
+  if (body.size < BINARY_BODY_FLOOR_BYTES || body.size >= LARGE_BINARY_BYTES) return false;
+  const config = readJson(CONFIG_ATTRIBUTE);
+  return Boolean(config?.active && config.blockUnscannable);
+}
+
 window.fetch = function guardedFetch(input, init) {
+  const body = init?.body;
+  if (needsAsyncSniff(body)) {
+    return body.slice(0, 8).arrayBuffer().then((head) => {
+      const blocked = offender(body, sniffsDocument(new Uint8Array(head)));
+      if (blocked) {
+        announce(blocked);
+        throw new TypeError("Failed to fetch");
+      }
+      return originalFetch.call(window, input, init);
+    });
+  }
   // Gövde Request nesnesinin içindeyse eşzamanlı okunamaz; bu yol DOM
   // katmanındaki araya girmeye bırakılır (README'de açıkça yazılıdır).
-  const blocked = offender(init?.body);
+  const blocked = offender(body);
   if (blocked) {
     announce(blocked);
     return Promise.reject(new TypeError("Failed to fetch"));

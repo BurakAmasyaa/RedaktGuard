@@ -374,7 +374,8 @@ test("adsız Blob gövdesi yalnız kurumsal zorlamada yükleme sayılır", async
   // Onaylı dosya varken gövde geçmeli; boyut eşitliği aranmamalı. Gemini teslim
   // edilen dosyayı parçalı yüklüyor, parça boyutu dosya boyutuna eşit değil —
   // eşitlik şartı kendi çıktımızı engelliyordu (sahada "adsız yükleme" uyarısı).
-  assert.match(offender, /key\.startsWith\("#"\)/u, "onay boyut eşitliğine bağlı; parçalı yükleme kırılır");
+  assert.match(offender, /APPROVAL_WINDOW_MS/u, "boyut onayı süreli değil; ilk onaydan sonra koruma sekme boyunca kapanır");
+  assert.match(offender, /probe\.size <= approval\.size/u, "parçalı yükleme (dosyadan küçük gövde) geçmiyor");
   assert.doesNotMatch(offender, /approved\.has\(sizeKey\(size\)\)/u);
 
   const interceptor = await source("guard/src/content/interceptor.js");
@@ -915,4 +916,39 @@ test("maskeleme aşaması izde görünür", async () => {
   const interceptor = await source("guard/src/content/interceptor.js");
   assert.match(interceptor, /step: "istemci: maskEnd alındı"/u);
   assert.match(interceptor, /step: "istemci: teslim başlıyor"/u);
+});
+
+// ---------------------------------------------------------------- oturum incelemesi regresyonları
+
+// Ölü girdi, page-guard'ın DOM'dan düşen input'ta kalan doğrudan dinleyicisi
+// sayesinde "ack" veriyor; teslim başarılı sayılıp menüyle kurdurulan taze girdi
+// hiç denenmiyordu. Gerçek DOM deneyinde ölü girdiye 1, taze girdiye 0 teslim.
+test("teslimde bağlı aday ölü adaydan önce denenir; taze girdi başa alınır", async () => {
+  const code = await source("guard/src/content/interceptor.js");
+  const fn = code.slice(code.indexOf("async function deliverToFileInput("), code.indexOf("const prefersFileInputDelivery"));
+  assert.match(fn, /candidates\.unshift\(fresh\.input\)/u, "taze girdi sona ekleniyor");
+  assert.match(fn, /candidates\.sort\(\(left, right\) => Number\(right\.isConnected\) - Number\(left\.isConnected\)\)/u, "bağlılığa göre sıralama yok");
+  assert.match(fn, /if \(openedMenu\) dismissOpenMenu\(\)/u, "başarısız teslimde açılan menü kapatılmıyor");
+});
+
+// Türsüz adsız gövde 256 KB altında hiç incelenmiyordu; Office belgelerinin
+// çoğu bu eşiğin altında. İlk baytlar belge imzasıysa yükleme sayılmalı.
+test("adsız gövde belge imzasından tanınır; küçük Blob eşzamansız koklanır", async () => {
+  const code = await source("guard/src/content/page-guard.js");
+  assert.match(code, /function sniffsDocument\(head\)/u);
+  assert.match(code, /0x25 && b === 0x50 && c === 0x44 && d === 0x46/u, "%PDF imzası yok");
+  assert.match(code, /0x50 && b === 0x4b && c === 0x03 && d === 0x04/u, "PK (docx/xlsx) imzası yok");
+  assert.match(code, /sniffedDocument \|\| sniffsDocument\(probe\.head\)/u, "imza karara girmiyor");
+  assert.match(code, /body\.slice\(0, 8\)\.arrayBuffer\(\)/u, "türsüz Blob koklanmıyor");
+  // XHR eşzamanlıdır; orada koklama olmaması bilinçli.
+  const xhr = code.slice(code.indexOf("XMLHttpRequest.prototype.send ="));
+  assert.doesNotMatch(xhr, /arrayBuffer\(\)/u);
+});
+
+test("boyut onayı zaman damgalı ve pencereli", async () => {
+  const { sizeKey, parseSizeKey, APPROVAL_WINDOW_MS } = await import("../guard/src/protocol.js");
+  assert.equal(sizeKey(10, 5), "#10|5");
+  assert.deepEqual(parseSizeKey("#10|5"), { size: 10, at: 5 });
+  assert.equal(parseSizeKey("#10"), null, "eski biçim geçerli sayılıyor");
+  assert.ok(APPROVAL_WINDOW_MS >= 5 * 60 * 1000 && APPROVAL_WINDOW_MS <= 30 * 60 * 1000);
 });

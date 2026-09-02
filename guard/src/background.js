@@ -272,6 +272,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         // belgeyi kapatıp yeniden kurmaktır.
         await restartOffscreen();
         return { ok: true };
+      case MSG.retryGpu:
+        // Çökme işareti tek yönlüydü: bir kez düşünce oturum boyunca WASM'de
+        // kalınıyor ve ayarlar bunu "WebGPU bulunamadı" sanıyordu. İşaretleri
+        // silip belgeyi yeniden kur; ısınma GPU'yu yeniden dener.
+        if (restarting) await restarting.catch(() => {});
+        if (creating) await creating.catch(() => {});
+        await chrome.offscreen.closeDocument().catch(() => {});
+        await chrome.storage.session.remove([CRASH_KEY, DEVICE_KEY]);
+        creating = null;
+        await ensureOffscreen();
+        return { ok: true };
       case MSG.readSettings:
         return { ok: true, settings: await readSettings() };
       case MSG.writeSettings:
@@ -340,10 +351,20 @@ openSessionStorageToContentScripts();
 // hâlindedir — okunmaz, saklanmaz, hiçbir yere yazılmaz.
 // Akışın nerede durduğunu konsol açmadan görebilmek için adım izi tutulur.
 // İçerik yok, yalnız adım adı ve saat.
-let trace = [];
+// İz bellekte değil depoda birikir: service worker her uyanışında bellek
+// kopyası boş başlıyor ve depodakini eziyordu — sorun giderme yolu kendi
+// kanıtını siliyordu. Tek zincir: oku-ekle-yaz sırayla.
+const TRACE_LIMIT = 40;
+let traceWork = Promise.resolve();
 function mark(step, detail) {
-  trace = [...trace.slice(-40), { step, detail: detail || null, at: new Date().toISOString() }];
-  chrome.storage.session.set({ [TRACE_KEY]: trace }).catch(() => {});
+  const entry = { step, detail: detail || null, at: new Date().toISOString() };
+  traceWork = traceWork
+    .then(async () => {
+      const stored = (await chrome.storage.session.get(TRACE_KEY))?.[TRACE_KEY];
+      const trace = Array.isArray(stored) ? stored : [];
+      await chrome.storage.session.set({ [TRACE_KEY]: [...trace.slice(-(TRACE_LIMIT - 1)), entry] });
+    })
+    .catch(() => {});
 }
 
 chrome.runtime.onConnect.addListener((clientPort) => {

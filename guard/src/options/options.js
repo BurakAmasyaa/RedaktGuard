@@ -44,15 +44,24 @@ async function load() {
 
   paintRules(await chrome.runtime.sendMessage({ type: MSG.readRules }), Boolean(settings.serverUrl));
 
-  const stored = await chrome.storage.session.get(DEVICE_KEY);
-  const device = stored?.[DEVICE_KEY];
+  const state = await chrome.runtime.sendMessage({ type: MSG.readEngineState }).catch(() => null);
+  const device = state?.device || null;
+  const crashed = Boolean(state?.crashed);
   const box = el("deviceStatus");
+  const retry = el("retryGpu");
+  retry.hidden = true;
   if (!device) {
     box.className = "status";
     box.textContent = "Tarama motoru henüz başlatılmadı. Korunan bir sayfa aç, sonra buraya dön.";
   } else if (device === "webgpu") {
     box.className = "status ok";
     box.textContent = "Kişi/kurum modeli WebGPU üzerinde çalışıyor — en hızlı yol (~7.400 karakter/sn).";
+  } else if (crashed) {
+    // Çökme sonrası güvenli yol ile "bu makinede GPU yok" farklı şeyler;
+    // ikisini aynı cümleyle vermek kullanıcıyı yanlış yere baktırıyordu.
+    box.className = "status warn";
+    box.textContent = `Model ${device} üzerinde: motor bir kez çöktüğü için güvenli yola düşüldü. GPU'yu yeniden deneyebilirsin.`;
+    retry.hidden = false;
   } else {
     box.className = "status warn";
     box.textContent = `Model ${device} üzerinde çalışıyor. WebGPU bulunamadı; tarama belirgin biçimde yavaş olur.`;
@@ -60,6 +69,15 @@ async function load() {
 }
 
 el("profile").addEventListener("change", () => writeSettings({ profile: el("profile").value }));
+
+el("retryGpu").addEventListener("click", async () => {
+  const button = el("retryGpu");
+  button.disabled = true;
+  button.textContent = "Yeniden kuruluyor…";
+  await chrome.runtime.sendMessage({ type: MSG.retryGpu }).catch(() => {});
+  // Isınma birkaç saniye sürer; cihaz satırı ondan sonra doğru dolar.
+  setTimeout(() => location.reload(), 6000);
+});
 
 el("connect").addEventListener("click", async () => {
   const button = el("connect");
