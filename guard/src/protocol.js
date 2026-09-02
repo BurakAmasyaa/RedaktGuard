@@ -107,3 +107,15 @@ export function isScannable(filename) {
 export function fileKey(name, size) {
   return `${String(name || "")}|${Number(size) || 0}`;
 }
+
+// Siteler dosyayı kendi adını taşımayan ham bir gövdeye sarabiliyor (imzalı
+// URL'e PUT edilen Blob gibi). O gövdede ad yoktur, geriye tek ayırt edici
+// olarak bayt uzunluğu kalır. Onay bu yüzden ada ek olarak boyutla da yazılır.
+export function sizeKey(size) {
+  return `#${Number(size) || 0}`;
+}
+
+// Bu boyutun altındaki adsız ikili gövdeler yükleme sayılmaz; siteler JSON ve
+// telemetriyi de Blob olarak gönderiyor ve onları engellemek sızıntıyı
+// durdurmaz, siteyi kırar.
+export const BINARY_BODY_FLOOR_BYTES = 4096;

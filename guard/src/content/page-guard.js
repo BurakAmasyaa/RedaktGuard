@@ -9,6 +9,7 @@
 // taklit edilmesi saldırgana bir şey kazandırmaz; kanal gizli değildir.
 
 import {
+  BINARY_BODY_FLOOR_BYTES,
   APPROVED_ATTRIBUTE,
   CONFIG_ATTRIBUTE,
   DROP_DELIVERY_ACK_ATTRIBUTE,
@@ -23,6 +24,7 @@ import {
   FILE_DELIVERY_TOKEN_ATTRIBUTE,
   GUARD_MARK,
   PAGE,
+  sizeKey,
 } from "../protocol.js";
 
 const originalFetch = window.fetch;
@@ -182,17 +184,43 @@ function filesIn(body) {
   return found;
 }
 
+// Adsız ikili gövdenin bayt uzunluğu. Siteler dosyayı kendi adını taşımayan
+// bir gövdeye sarıp imzalı URL'e PUT edebiliyor; o yol yalnız File ve FormData
+// aranırsa tamamen görünmez kalır ve maskelenmemiş belge ağa çıkar.
+function binaryBodySize(body) {
+  if (!body || body instanceof File) return null;
+  if (body instanceof Blob) return body.size;
+  if (body instanceof ArrayBuffer) return body.byteLength;
+  if (ArrayBuffer.isView(body)) return body.byteLength;
+  if (body instanceof FormData) {
+    for (const value of body.values()) {
+      if (value instanceof Blob && !(value instanceof File)) return value.size;
+    }
+  }
+  return null;
+}
+
 // Engellenmesi gereken ilk dosyanın adını döndürür, yoksa null.
 // Gövdede dosya yoksa tek bir instanceof kontrolüyle çıkar: bu yol her
 // fetch çağrısında işlediği için ucuz kalmalı.
 function offender(body) {
   const files = filesIn(body);
-  if (!files.length) return null;
-
   const config = readJson(CONFIG_ATTRIBUTE);
   if (!config?.active) return null;
+  if (!files.length && !config.blockUnscannable) return null;
   const extensions = Array.isArray(config.extensions) ? config.extensions : [];
   const approved = new Set(readJson(APPROVED_ATTRIBUTE) || []);
+
+  if (!files.length) {
+    // Buraya yalnız adsız ikili gövdeyle gelinir. Kurumsal zorlama kapalıyken
+    // dokunulmaz: sıradan siteler JSON ve telemetriyi de Blob gönderir ve
+    // onları engellemek sızıntıyı durdurmaz, siteyi kırar. Zorlama açıkken
+    // ("maskesiz gönderim yoktur") tanınmayan büyük ikili gövde durdurulur —
+    // kendi maskelediğimiz dosya boyutuyla onaylı olduğu için geçer.
+    const size = binaryBodySize(body);
+    if (!config.blockUnscannable || size === null || size < BINARY_BODY_FLOOR_BYTES) return null;
+    return approved.has(sizeKey(size)) ? null : "adsız yükleme";
+  }
 
   for (const file of files) {
     const name = String(file.name || "");

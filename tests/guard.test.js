@@ -355,15 +355,28 @@ test("ağ katmanı, kendi verdiğimiz onayı her dosya türünde tanır", async 
   assert.ok(approvedAt < scannableAt, "onay, taranamayan dosyalarda okunmuyor");
 });
 
-test("ağ katmanı adsız Blob gövdelerini dosya saymaz", async () => {
+test("adsız Blob gövdesi yalnız kurumsal zorlamada yükleme sayılır", async () => {
   const code = await source("guard/src/content/page-guard.js");
-  const body = code.slice(code.indexOf("function filesIn("), code.indexOf("function offender("));
-  assert.match(body, /instanceof File/u);
-  // Adsız Blob "kullanıcının yüklediği dosya" değildir; siteler JSON ve ikili
-  // gövdeleri de Blob gönderir, onları engellemek sızıntıyı durdurmaz siteyi kırar.
-  assert.doesNotMatch(body, /instanceof Blob/u, "adsız Blob gövdeleri engelleniyor");
-});
 
+  // filesIn hâlâ yalnız File tanır: sıradan kullanımda siteler JSON ve
+  // telemetriyi de Blob gönderir, onları dosya saymak siteyi kırar.
+  const filesIn = code.slice(code.indexOf("function filesIn("), code.indexOf("function binaryBodySize("));
+  assert.match(filesIn, /instanceof File/u);
+  assert.doesNotMatch(filesIn, /instanceof Blob/u, "adsız Blob dosya sayılıyor");
+
+  // Ama site dosyayı adsız bir gövdeye sarıp imzalı URL'e PUT edebiliyor.
+  // O yol yalnız File aranırsa tamamen görünmez kalır. Zorlama açıkken
+  // ("maskesiz gönderim yoktur") tanınmayan büyük ikili gövde durdurulur.
+  const offender = code.slice(code.indexOf("function offender("), code.indexOf("function announce("));
+  assert.match(offender, /binaryBodySize\(body\)/u, "ikili gövde hiç incelenmiyor");
+  assert.match(offender, /!config\.blockUnscannable/u, "zorlama kapalıyken de engelliyor");
+  assert.match(offender, /BINARY_BODY_FLOOR_BYTES/u, "küçük gövdeler için eşik yok");
+  // Kendi maskelediğimiz dosya boyutuyla onaylı olduğu için geçmeli.
+  assert.match(offender, /approved\.has\(sizeKey\(size\)\)/u, "kendi çıktımız engellenir");
+
+  const interceptor = await source("guard/src/content/interceptor.js");
+  assert.match(interceptor, /approvedKeys\.add\(sizeKey\(file\.size\)\)/u, "boyut onayı yazılmıyor");
+});
 test("bildirilen parça sayısı gerçekten gönderilen parça sayısına eşittir", () => {
   const size = 1024;
   for (const length of [0, 1, size - 1, size, size + 1, size * 3, size * 3 + 7]) {
@@ -811,4 +824,46 @@ test("çalışan donanım içerik betiğinden okunabilir", async () => {
   assert.match(background, /setAccessLevel\(\{ accessLevel: "TRUSTED_AND_UNTRUSTED_CONTEXTS" \}\)/u);
   const interceptor = await source("guard/src/content/interceptor.js");
   assert.match(interceptor, /chrome\.storage\.session\s*\n?\s*\.get\(DEVICE_KEY\)/u);
+});
+
+// chatgpt.com'da canlı ölçüldü: gerçek upload input'una files+change de,
+// sentetik drop da eki iliştiriyor. ChatGPT'de "taranıyor ama eklenmiyor"
+// belirtisinin sebebi mekanizma değil, teslimin site-özel bir kapının
+// arkasında kalıp ChatGPT'de hiç DOĞRULANMAMASIYDI: yanlış hedefe inen drop
+// sessizce kayboluyordu. Katmanlı ve doğrulanan teslim her sitede açık kalmalı.
+test("teslim her sitede katmanlı ve doğrulanır; site-özel kapı yok", async () => {
+  const code = await source("guard/src/content/interceptor.js");
+  assert.match(code, /const prefersFileInputDelivery = \(\) => true;/u, "teslim yine site-özel kapıya alınmış");
+  assert.doesNotMatch(code, /prefersFileInputDelivery = \(\) => SITE_ID ===/u);
+
+  // Drop yolu: `void guardFiles(` üç kez, `cleanupDropUi(` iki kez geçtiği için
+  // dilim, yalnız drop yolunda geçen uyarı metnine kadar alınır.
+  const dropEnd = code.indexOf("Maskelenmiş dosya ${SITE} yükleme alanı tarafından kabul edilmedi");
+  assert.ok(dropEnd > 0, "drop yolunun başarısızlık uyarısı yok — sessiz kayıp geri geldi");
+  const dropStart = code.lastIndexOf("const firstInput = prefersFileInputDelivery()", dropEnd);
+  const drop = code.slice(dropStart, dropEnd);
+  // Girdi teslimi denenmeli ve sonuç beklenmeli; başarısızsa kullanıcı duymalı.
+  assert.match(drop, /deliverToFileInput\(firstInput, delivered\)/u, "drop yolunda girdi teslimi yok");
+  assert.match(drop, /await waitForDelivery\(delivered, deliveryBaseline\)/u, "teslim doğrulanmıyor");
+});
+
+// gemini.google.com'da canlı ölçüldü: dosya girdisi yalnız "Yükleme ve araçlar"
+// menüsü açıkken DOM'da; bırakma anında yok. Tarama sürerken menü kapanıp
+// girdiyi öldürünce teslim ölü girdiye gidiyor, ek hiç oluşmuyordu. Girdi yoksa
+// menü açılıp taze girdi beklenmeli. Girdi yolu (menü açıkken files+change)
+// aynı sayfada gerçek ek üretti — mekanizma doğru, eksik olan girdinin varlığıydı.
+test("teslim anında dosya girdisi yoksa yükleme menüsü açılıp taze girdi beklenir", async () => {
+  const code = await source("guard/src/content/interceptor.js");
+  assert.match(code, /async function materializeUploadInput\(/u, "girdi kurdurma yok");
+  assert.match(code, /async function deliverToFileInput\(/u, "teslim eşzamansız değil; menü beklenemez");
+  // Gemini'nin Türkçe etiketi ve İngilizce karşılıkları tanınmalı.
+  assert.match(code, /UPLOAD_TRIGGER_LABEL = \/[^/]*yükleme ve araçlar[^/]*upload and tools/u, "Gemini tetikleyicisi tanınmıyor");
+  // Bağlı aday yoksa kurdurma denenmeli.
+  assert.match(code, /if \(!candidates\.some\(\(input\) => input\.isConnected\)\)/u);
+  assert.match(code, /await materializeUploadInput\(files\)/u);
+  // Üç çağrı yeri de artık beklemeli; beklenmeyen çağrı her zaman "truthy" Promise döner
+  // ve teslim başarılı sanılır.
+  const calls = code.match(/deliverToFileInput\((firstInput|input), delivered\)/gu) || [];
+  assert.ok(calls.length >= 3, `çağrı yeri sayısı beklenmedik: ${calls.length}`);
+  assert.doesNotMatch(code, /(?<!await )deliverToFileInput\((firstInput|input), delivered\)/u, "beklenmeyen deliverToFileInput çağrısı var");
 });

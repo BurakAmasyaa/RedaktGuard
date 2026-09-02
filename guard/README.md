@@ -193,6 +193,39 @@ Bu paketle regex, doğrulama ve kurumsal kural katmanları çalışır; NER ve O
 Kurumsal dağıtımda uzantı, Intune/GPO ile `ExtensionInstallForcelist` üzerinden
 zorunlu kurulur ve `ExtensionSettings` ile kaldırılması engellenir.
 
+## Microsoft Edge
+
+Edge'de aynı paket çalışır; farklar kurulumda ve hızda.
+
+**Kurulum**
+
+1. `edge://extensions` → sol altta **Geliştirici modu** → **Paketlenmemiş öğe yükle** → `dist-guard`.
+2. Aynı sayfada Redakt Guard → **Ayrıntılar** → **Site erişimi** → **"Tüm sitelerde"**.
+   Edge, paketlenmemiş uzantıya site erişimini "tıklandığında" verebiliyor: o zaman
+   içerik betiği yalnız simgeye bastığın sekmede çalışır. Belirti tam olarak şudur —
+   ChatGPT'de çalışır, `claude.ai`'de Guard hiç devreye girmez ve dosya maskelenmeden gider.
+3. Açık ChatGPT/Claude/Gemini sekmelerini **yenile**; içerik betiği sayfa açılışında yüklenir.
+4. Korunan bir sayfa açıp 2-3 saniye bekle, sonra ayarlar → **Tarama** satırına bak.
+
+**Hız**
+
+Ayarlarda "Model **wasm** üzerinde çalışıyor" yazıyorsa Edge WebGPU'yu vermemiş demektir;
+`edge://gpu` sayfasındaki **WebGPU** satırı sebebini gösterir. Tarama yine çalışır ama
+tek çekirdekte, 12 kat yavaş (20 sayfalık belge ~40 sn). Zorlanan bir şey yok: bu
+makinede WebGPU açılırsa Guard onu kendiliğinden kullanır.
+
+**Kurumsal dağıtım**
+
+Edge, Chrome ile aynı politika adlarını kullanır: Intune/GPO ile
+`ExtensionInstallForcelist` zorunlu kurar, `ExtensionSettings` kaldırmayı engeller ve
+`runtime_allowed_hosts` ile site erişimini sabitler — 2. adım böylece kullanıcıya kalmaz.
+
+**Takılırsa**
+
+Ayarlar → **Sorun giderme** → **Motoru sına**. İz, akışın nerede durduğunu adım adım
+söyler; yalnız adım adları tutulur, dosya adı ve içerik asla yazılmaz. `motor:` satırları
+hiç yoksa offscreen belge kurulmamıştır; `ready` gelip sonrası yoksa motor yanıt vermiyordur.
+
 ## Ayarlar
 
 Araç çubuğundaki simge ayarlar sayfasını açar.

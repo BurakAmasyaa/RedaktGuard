@@ -30,6 +30,7 @@ import {
   extensionOf,
   fileKey,
   isScannable,
+  sizeKey,
 } from "../protocol.js";
 import { DEFAULT_SETTINGS, DEVICE_KEY, RULES_KEY, onSettingsChanged, readRules, readSettings } from "../settings.js";
 import { connectRuntime, sendRuntimeMessage, sendRuntimeMessageBestEffort } from "../runtime.js";
@@ -124,7 +125,12 @@ function configurePageGuard() {
 const approvedKeys = new Set();
 
 function approve(files) {
-  for (const file of files) approvedKeys.add(fileKey(file.name, file.size));
+  for (const file of files) {
+    approvedKeys.add(fileKey(file.name, file.size));
+    // Site dosyayı adsız bir gövdeye sararsa (imzalı URL'e PUT edilen Blob)
+    // ağ katmanı onu yalnız boyutundan tanıyabilir.
+    approvedKeys.add(sizeKey(file.size));
+  }
   // JSON: dosya adı satır sonu içerebilir, düz birleştirme hem kendi onayımızı
   // bozar hem de uydurma bir adla sahte onay üretmeye izin verirdi.
   document.documentElement.setAttribute(APPROVED_ATTRIBUTE, JSON.stringify([...approvedKeys]));
@@ -825,8 +831,46 @@ function replayFilesToInput(input, files) {
   }
 }
 
-function deliverToFileInput(firstInput, files) {
+// Bazı arayüzler dosya girdisini ancak yükleme menüsü açıkken kuruyor.
+// gemini.google.com'da canlı ölçüldü: bırakma anında DOM'da input[type=file]
+// yok; "Yükleme ve araçlar" düğmesine basılınca belge kabul eden iki girdi
+// beliriyor ve o girdiye files+change eki iliştiriyor. Menü kapalıyken drop
+// tekrarı ise eki hiç üretmiyor. Girdi yoksa menüyü açıp taze girdiyi bekle.
+const UPLOAD_TRIGGER_LABEL = /yükleme ve araçlar|upload and tools|add files|dosya ekle|attach files|dosya yükle/iu;
+
+function deepQueryAll(selector, root = document, output = []) {
+  for (const element of root.querySelectorAll?.(selector) || []) output.push(element);
+  for (const element of root.querySelectorAll?.("*") || []) {
+    if (element.shadowRoot) deepQueryAll(selector, element.shadowRoot, output);
+  }
+  return output;
+}
+
+async function materializeUploadInput(files) {
+  const trigger = deepQueryAll("button").find((button) =>
+    button.isConnected &&
+    !button.disabled &&
+    UPLOAD_TRIGGER_LABEL.test(`${button.getAttribute("aria-label") || ""} ${button.textContent || ""}`)
+  );
+  if (!trigger) return null;
+  trigger.click();
+  // Menü animasyonla açılıyor; girdi birkaç kare sonra DOM'a giriyor.
+  for (let frame = 0; frame < 8; frame += 1) {
+    await nextFrame();
+    const fresh = findCompatibleFileInput(files);
+    if (fresh) return fresh;
+  }
+  return null;
+}
+
+async function deliverToFileInput(firstInput, files) {
   const candidates = [firstInput, findCompatibleFileInput(files)].filter(Boolean);
+  // Tarama sürerken menü kapanıp girdiyi öldürmüş olabilir; bağlı aday yoksa
+  // taze bir girdi kurdur.
+  if (!candidates.some((input) => input.isConnected)) {
+    const fresh = await materializeUploadInput(files);
+    if (fresh) candidates.push(fresh);
+  }
   const tried = new Set();
   for (const input of candidates) {
     if (tried.has(input)) continue;
@@ -836,7 +880,13 @@ function deliverToFileInput(firstInput, files) {
   return false;
 }
 
-const prefersFileInputDelivery = () => SITE_ID === "gemini" || SITE_ID === "claude";
+// Her sitede katmanlı ve DOĞRULANAN teslim kullanılır. Eskiden yalnız
+// Gemini/Claude bu yoldan gidiyordu; ChatGPT doğrudan sentetik drop'a düşüyor ve
+// teslimi hiç doğrulamıyordu — yanlış hedefe inen drop sessizce kayboluyor,
+// kullanıcı "taranıyor ama eklenmiyor" görüyordu. chatgpt.com'da canlı ölçüldü:
+// hem gerçek upload input'una files+change, hem sentetik drop eki iliştiriyor;
+// kırılan mekanizma değil, hedef seçimi ve doğrulama eksikliğiydi.
+const prefersFileInputDelivery = () => true;
 
 function replayDropInPage(target, files, { clientX = 0, clientY = 0 } = {}) {
   if (!(target instanceof Element) || !target.isConnected || !files.length) return false;
@@ -1024,7 +1074,7 @@ window.addEventListener(
         }
       }
       // MAIN drag yolu kullanılamadıysa gerçek upload input'u ikinci yedektir.
-      if (prefersFileInputDelivery() && deliverToFileInput(firstInput, delivered)) {
+      if (prefersFileInputDelivery() && await deliverToFileInput(firstInput, delivered)) {
         if (await waitForDelivery(delivered, deliveryBaseline)) {
           announceDelivered(delivered);
           return;
@@ -1078,7 +1128,7 @@ function interceptFileInput(event) {
   void guardFiles(files, async (delivered) => {
     // Önce kullanıcının seçtiği input denenir: doğrudan MAIN-world dinleyicisi
     // DOM'dan ayrılmış olsa bile üzerinde kalır. Sonra güncel eşdeğeri aranır.
-    if (!deliverToFileInput(input, delivered) || !(await waitForDelivery(delivered, deliveryBaseline))) {
+    if (!await deliverToFileInput(input, delivered) || !(await waitForDelivery(delivered, deliveryBaseline))) {
       toast(`Yükleme alanı değişti; maskelenmiş dosya ${SITE} sitesine eklenemedi.`);
     } else {
       announceDelivered(delivered);
@@ -1121,7 +1171,7 @@ window.addEventListener(
     void guardFiles(files, async (delivered) => {
       // Görsel yapıştırma da dosya yükleme hattıdır. Gemini/Claude sentetik
       // ClipboardEvent'i yok sayarsa gerçek upload input'u üzerinden teslim et.
-      if (prefersFileInputDelivery() && deliverToFileInput(firstInput, delivered)) {
+      if (prefersFileInputDelivery() && await deliverToFileInput(firstInput, delivered)) {
         if (await waitForDelivery(delivered, deliveryBaseline)) {
           announceDelivered(delivered);
           return;
