@@ -183,9 +183,8 @@ git clone https://github.com/BurakAmasyaa/RedaktGuard.git
 
 Chrome/Edge → Uzantılar → Geliştirici modu → **Paketlenmemiş öğe yükle** → `RedaktGuard/dist-guard`.
 
-Paket ~206 MB'tır; 180 MB'ı model ve OCR varlıkları. Depoda aynı dosyalar `public/`
-altında da durduğu için Git bunları bir kez saklar — klon geçmişi şişmez, yalnız
-çalışma ağacında iki kopya bulunur.
+Paket ~206 MB'tır; 180 MB'ı model ve OCR varlıkları. Model ve OCR yalnız
+`dist-guard/` altında durur; derleme onları yerinde bırakır.
 
 Kodu değiştirdiysen paketi tazele:
 
