@@ -193,8 +193,7 @@ Kodu değiştirdiysen paketi tazele:
 npm install && npm run build
 ```
 
-Derleme yalnız kodu yeniler; `dist-guard/models` ve `dist-guard/ocr` yerinde kalır,
-`public/` varsa üzerine yazılır.
+Derleme yalnız kodu yeniler; `dist-guard/models` ve `dist-guard/ocr` yerinde kalır.
 
 Varlıkları hiç kopyalamadan yalnız kodu derlemek için `node guard/build.mjs --no-assets`;
 varlıklar `dist-guard` içinde zaten varsa paket yine tam çalışır.
