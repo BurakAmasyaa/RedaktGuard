@@ -1273,8 +1273,8 @@ configurePageGuard();
 // yüklenmesi beklenmesin. Sayfanın kendi yüklenmesiyle yarışmamak için beklenir.
 setTimeout(() => {
   if (settingsReady && !settings.enabled) return;
-  sendRuntimeMessageBestEffort({ type: MSG.ensureEngine });
-// Rozetteki yeşil nokta: "bu sekmede Guard yüklü". Yoksa sekme uzantıdan önce
+  // Rozetteki yeşil nokta: "bu sekmede Guard yüklü". Yoksa sekme uzantıdan önce
 // açılmıştır ve koruma o sekmede hiç çalışmıyordur.
 sendRuntimeMessageBestEffort({ type: MSG.contentReady });
+sendRuntimeMessageBestEffort({ type: MSG.ensureEngine });
 }, 1500);
