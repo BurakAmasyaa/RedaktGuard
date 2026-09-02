@@ -214,12 +214,18 @@ function offender(body) {
   if (!files.length) {
     // Buraya yalnız adsız ikili gövdeyle gelinir. Kurumsal zorlama kapalıyken
     // dokunulmaz: sıradan siteler JSON ve telemetriyi de Blob gönderir ve
-    // onları engellemek sızıntıyı durdurmaz, siteyi kırar. Zorlama açıkken
-    // ("maskesiz gönderim yoktur") tanınmayan büyük ikili gövde durdurulur —
-    // kendi maskelediğimiz dosya boyutuyla onaylı olduğu için geçer.
+    // onları engellemek sızıntıyı durdurmaz, siteyi kırar.
+    //
+    // Zorlama açıkken kural şudur: bu sekmede HİÇ onaylı dosya yoksa büyük
+    // ikili gövde durdurulur — yakalama atlanmış, sayfa elindeki özgün dosyayı
+    // yüklüyor demektir. Onaylı dosya varsa gövde geçer. Boyut eşitliği
+    // aranmaz: Gemini teslim ettiğimiz dosyayı parça parça (resumable) yüklüyor,
+    // parça boyutu dosya boyutuna eşit olmadığı için kendi çıktımızı
+    // engelliyorduk — temiz PDF'te bile "adsız yükleme" uyarısı çıkıyordu.
     const size = binaryBodySize(body);
     if (!config.blockUnscannable || size === null || size < BINARY_BODY_FLOOR_BYTES) return null;
-    return approved.has(sizeKey(size)) ? null : "adsız yükleme";
+    const anyApproved = [...approved].some((key) => key.startsWith("#"));
+    return anyApproved ? null : "adsız yükleme";
   }
 
   for (const file of files) {

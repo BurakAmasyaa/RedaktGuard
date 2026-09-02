@@ -371,8 +371,11 @@ test("adsız Blob gövdesi yalnız kurumsal zorlamada yükleme sayılır", async
   assert.match(offender, /binaryBodySize\(body\)/u, "ikili gövde hiç incelenmiyor");
   assert.match(offender, /!config\.blockUnscannable/u, "zorlama kapalıyken de engelliyor");
   assert.match(offender, /BINARY_BODY_FLOOR_BYTES/u, "küçük gövdeler için eşik yok");
-  // Kendi maskelediğimiz dosya boyutuyla onaylı olduğu için geçmeli.
-  assert.match(offender, /approved\.has\(sizeKey\(size\)\)/u, "kendi çıktımız engellenir");
+  // Onaylı dosya varken gövde geçmeli; boyut eşitliği aranmamalı. Gemini teslim
+  // edilen dosyayı parçalı yüklüyor, parça boyutu dosya boyutuna eşit değil —
+  // eşitlik şartı kendi çıktımızı engelliyordu (sahada "adsız yükleme" uyarısı).
+  assert.match(offender, /key\.startsWith\("#"\)/u, "onay boyut eşitliğine bağlı; parçalı yükleme kırılır");
+  assert.doesNotMatch(offender, /approved\.has\(sizeKey\(size\)\)/u);
 
   const interceptor = await source("guard/src/content/interceptor.js");
   assert.match(interceptor, /approvedKeys\.add\(sizeKey\(file\.size\)\)/u, "boyut onayı yazılmıyor");
@@ -487,7 +490,7 @@ test("farklı sekmelerin motor işleri tek kuyrukta ve heartbeat ile yürür", a
       `${call} ortak motor kuyruğundan geçmiyor`);
   }
   const panel = await source("guard/src/content/panel.js");
-  assert.match(panel, /queued: "Diğer sekmedeki tarama bekleniyor"/u);
+  assert.match(panel, /queued: "Motor sırada"/u);
 });
 
 test("oturum kimliği sekmeler arasında çakışmaz", async () => {
@@ -879,4 +882,15 @@ test("içerik betiği yüklendiğini bildirir ve rozet bunu gösterir", async ()
   assert.match(background, /ready \? "●" : ""/u, "hazır sekme rozette görünmüyor");
   // Sekme yenilenince işaret düşmeli; içerik betiği yeniden bildirir.
   assert.match(background, /delete ready\[tabId\]/u);
+});
+
+// Isınma sürerken gelen tarama "başka sekmedeki tarama" diye bekletiliyordu;
+// sahada başka sekme yoktu, mesaj yanlış yere baktırdı. Bekleme sebebi ayrılmalı.
+test("kuyrukta bekleme sebebi doğru söylenir; ısınma başka sekme sanılmaz", async () => {
+  const offscreen = await source("guard/src/offscreen.js");
+  assert.doesNotMatch(offscreen, /detail: "Başka bir sekmedeki/u, "bekleme hâlâ başka sekmeye bağlanıyor");
+  assert.match(offscreen, /busyReason === "warmup"/u, "ısınma sebebi ayrılmıyor");
+  assert.match(offscreen, /reason: "warmup"/u, "ısınma işi sebep taşımıyor");
+  const panel = await source("guard/src/content/panel.js");
+  assert.doesNotMatch(panel, /Diğer sekmedeki/u);
 });

@@ -52,6 +52,7 @@ git clone https://github.com/BurakAmasyaa/RedaktGuard.git
 | Panel "Tarama motoru hazırlanıyor"da uzun bekliyor | 147 MB model ilk kullanımda hazırlanıyor | Bir kerelik; sonraki taramalar saniyeler sürer |
 | Ayarlarda "Model wasm üzerinde çalışıyor" | Tarayıcı WebGPU vermemiş (`chrome://gpu` / `edge://gpu`) | Çalışır, 12 kat yavaş. GPU sürücüsü güncelse WebGPU kendiliğinden devreye girer |
 | "Motor yanıt vermedi; yeniden kuruldu" | Motor kilitlendi, kendini toparladı | Dosyayı tekrar bırakın |
+| Panel "Motor sırada" diyor | Model hâlâ ısınıyor (ilk 5-10 sn) ya da önceki tarama bitmedi | Bekleyin; kendiliğinden devam eder |
 | Kurumsal kurallar "0 kural" | Redakt On-Premise adresi girilmemiş | Ayarlar → Kurumsal kural sunucusu (isteğe bağlı; yerel katmanlar adres olmadan da çalışır) |
 
 Takılırsanız: ayarlar → **Sorun giderme** → **Motoru sına**. İz, akışın hangi adımda

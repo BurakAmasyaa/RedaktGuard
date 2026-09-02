@@ -20,9 +20,19 @@ const relaySessions = new Map();
 // "motor sustu" sanmasını engeller.
 let engineWork = Promise.resolve();
 let engineBusy = false;
+let busyReason = null;
 let waitingJobs = 0;
 
-function enqueueEngineWork(port, id, task, { requireSession = true } = {}) {
+// Sırada beklemenin sebebi kullanıcıya doğru söylenmeli. Isınma 5 sn sürerken
+// gelen tarama "başka sekme" diye bekletiliyordu; sahada başka sekme yoktu ve
+// mesaj yanlış yere baktırdı. Motor meşgulse sebep model hazırlığı da olabilir,
+// aynı sekmeden gelen önceki iş de.
+function queuedDetail() {
+  if (busyReason === "warmup") return "Yerel model hazırlanıyor; tarama hemen ardından başlayacak.";
+  return "Motor önceki işi bitirince otomatik devam edecek.";
+}
+
+function enqueueEngineWork(port, id, task, { requireSession = true, reason = "scan" } = {}) {
   const queued = engineBusy || waitingJobs > 0;
   waitingJobs += 1;
   let heartbeat = null;
@@ -32,12 +42,7 @@ function enqueueEngineWork(port, id, task, { requireSession = true } = {}) {
       heartbeat = null;
       return;
     }
-    send(port, {
-      cmd: CMD.progress,
-      id,
-      phase: "queued",
-      detail: "Başka bir sekmedeki güvenli tarama bitince otomatik devam edecek.",
-    });
+    send(port, { cmd: CMD.progress, id, phase: "queued", detail: queuedDetail() });
   };
   if (queued) {
     announceQueued();
@@ -50,10 +55,12 @@ function enqueueEngineWork(port, id, task, { requireSession = true } = {}) {
     heartbeat = null;
     if (requireSession && !inbox.has(id)) return;
     engineBusy = true;
+    busyReason = reason;
     try {
       return await task();
     } finally {
       engineBusy = false;
+      busyReason = null;
     }
   };
   const scheduled = engineWork.then(run, run);
@@ -326,6 +333,6 @@ enqueueEngineWork(null, null, async () => {
         (error) => mark("çalışan motor kaydedilemedi", String(error?.message || error).slice(0, 160))
       );
     });
-}, { requireSession: false }).catch((error) => {
+}, { requireSession: false, reason: "warmup" }).catch((error) => {
   mark("ısınma başarısız", String(error?.message || error).slice(0, 160));
 });
