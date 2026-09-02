@@ -58,6 +58,8 @@ export const MSG = Object.freeze({
   activity: "guard/activity",
   // İçerik betiği korunan sayfada yüklenince bildirir; rozet "bu sekmede aktif" olur.
   contentReady: "guard/content-ready",
+  // Çökme sonrası güvenli yola düşüldüyse GPU'yu yeniden dener (işaretleri siler).
+  retryGpu: "guard/retry-gpu",
 });
 
 export const CMD = Object.freeze({
@@ -113,9 +115,19 @@ export function fileKey(name, size) {
 // Siteler dosyayı kendi adını taşımayan ham bir gövdeye sarabiliyor (imzalı
 // URL'e PUT edilen Blob gibi). O gövdede ad yoktur, geriye tek ayırt edici
 // olarak bayt uzunluğu kalır. Onay bu yüzden ada ek olarak boyutla da yazılır.
-export function sizeKey(size) {
-  return `#${Number(size) || 0}`;
+export function sizeKey(size, at = Date.now()) {
+  return `#${Number(size) || 0}|${Number(at) || 0}`;
 }
+
+// "#boyut|zaman" anahtarını çözer; biçim tutmuyorsa null.
+export function parseSizeKey(key) {
+  const match = /^#(\d+)\|(\d+)$/u.exec(String(key || ""));
+  return match ? { size: Number(match[1]), at: Number(match[2]) } : null;
+}
+
+// Boyut onayı sekme ömrü boyunca değil, bu süre boyunca geçerlidir. Aksi hâlde
+// ilk onaydan sonra adsız gövde koruması o sekmede fiilen kapanıyordu.
+export const APPROVAL_WINDOW_MS = 10 * 60 * 1000;
 
 // Bu boyutun altındaki adsız ikili gövdeler yükleme sayılmaz; siteler JSON ve
 // telemetriyi de Blob olarak gönderiyor ve onları engellemek sızıntıyı
