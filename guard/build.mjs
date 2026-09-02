@@ -23,9 +23,18 @@ const withAssets = !process.argv.includes("--no-assets");
 
 const pkg = JSON.parse(await fs.readFile(path.join(root, "package.json"), "utf8"));
 
+// dist-guard depoda hazır durur ki klonlayan derlemeden "Paketlenmemiş öğe
+// yükle" diyebilsin. Bu yüzden klasör kökten silinmez: kod çıktıları tazelenir,
+// model ve OCR varlıkları yerinde kalır. Git aynı içerikli dosyayı bir kez
+// sakladığından dist-guard/models ile public/models geçmişi şişirmez.
+const KEEP_ON_CLEAN = new Set(["models", "ocr"]);
+
 async function clean() {
-  await fs.rm(outDir, { recursive: true, force: true });
   await fs.mkdir(outDir, { recursive: true });
+  for (const entry of await fs.readdir(outDir)) {
+    if (KEEP_ON_CLEAN.has(entry)) continue;
+    await fs.rm(path.join(outDir, entry), { recursive: true, force: true });
+  }
 }
 
 async function buildEngineContext() {
@@ -84,7 +93,16 @@ async function buildContentScript(name) {
 async function copyAssets() {
   if (!withAssets) return;
   for (const folder of ["models", "ocr"]) {
-    await fs.cp(path.join(root, "public", folder), path.join(outDir, folder), { recursive: true });
+    const source = path.join(root, "public", folder);
+    const target = path.join(outDir, folder);
+    // Kaynak yoksa (yalnız dist-guard taşıyan bir klon) eldeki varlık korunur.
+    const hasSource = await fs.stat(source).then(() => true, () => false);
+    if (!hasSource) {
+      const hasTarget = await fs.stat(target).then(() => true, () => false);
+      console.log(`  ${folder}: public/ altında kaynak yok, ${hasTarget ? "dist-guard içindeki kopya korunuyor" : "PAKETTE EKSİK"}`);
+      continue;
+    }
+    await fs.cp(source, target, { recursive: true, force: true });
   }
 }
 

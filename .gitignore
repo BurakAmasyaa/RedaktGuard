@@ -1,5 +1,4 @@
 node_modules/
-dist-guard/
 .DS_Store
 
 # Yerel yapılandırma, imza anahtarları ve paketler

@@ -175,20 +175,29 @@ koştuğu için, GPU kullanılacakken iş parçacığı istemek oturumu askıda 
 
 ## Kurulum
 
-```bash
-npm run build:guard
-```
-
-`dist-guard/` üretilir (~201 MB; 177 MB'ı model ve OCR varlıkları).
-Chrome/Edge → Uzantılar → Geliştirici modu → **Paketlenmemiş öğe yükle** → `dist-guard`.
-
-Geliştirirken varlıkları atlayıp 25 MB'lık paket almak için:
+Derleme gerekmez: `dist-guard/` depoda hazır durur.
 
 ```bash
-node guard/build.mjs --no-assets
+git clone https://github.com/BurakAmasyaa/RedaktGuard.git
 ```
 
-Bu paketle regex, doğrulama ve kurumsal kural katmanları çalışır; NER ve OCR çalışmaz.
+Chrome/Edge → Uzantılar → Geliştirici modu → **Paketlenmemiş öğe yükle** → `RedaktGuard/dist-guard`.
+
+Paket ~206 MB'tır; 180 MB'ı model ve OCR varlıkları. Depoda aynı dosyalar `public/`
+altında da durduğu için Git bunları bir kez saklar — klon geçmişi şişmez, yalnız
+çalışma ağacında iki kopya bulunur.
+
+Kodu değiştirdiysen paketi tazele:
+
+```bash
+npm install && npm run build
+```
+
+Derleme yalnız kodu yeniler; `dist-guard/models` ve `dist-guard/ocr` yerinde kalır,
+`public/` varsa üzerine yazılır.
+
+Varlıkları hiç kopyalamadan yalnız kodu derlemek için `node guard/build.mjs --no-assets`;
+varlıklar `dist-guard` içinde zaten varsa paket yine tam çalışır.
 
 Kurumsal dağıtımda uzantı, Intune/GPO ile `ExtensionInstallForcelist` üzerinden
 zorunlu kurulur ve `ExtensionSettings` ile kaldırılması engellenir.
