@@ -274,9 +274,13 @@ class EnginePort {
     const done = new Promise((resolve, reject) => {
       this.routes.set(id, (message) => {
         if (message.cmd === CMD.progress) onProgress?.(message);
-        else if (message.cmd === CMD.maskBegin) header = message;
+        else if (message.cmd === CMD.maskBegin) {
+          header = message;
+          sendRuntimeMessageBestEffort({ type: MSG.mark, step: "istemci: maskBegin alındı", detail: `${message.size} bayt · ${message.chunks} parça` });
+        }
         else if (message.cmd === CMD.maskChunk) parts.push({ seq: message.seq, bytes: base64ToBytes(message.data) });
         else if (message.cmd === CMD.maskEnd) {
+          sendRuntimeMessageBestEffort({ type: MSG.mark, step: "istemci: maskEnd alındı", detail: `${parts.length} parça toplandı` });
           this.routes.delete(id);
           if (!header) {
             reject(new Error("Maskelenmiş dosya eksik aktarıldı."));
@@ -864,6 +868,7 @@ async function materializeUploadInput(files) {
 }
 
 async function deliverToFileInput(firstInput, files) {
+  sendRuntimeMessageBestEffort({ type: MSG.mark, step: "istemci: teslim başlıyor", detail: `${files.length} dosya` });
   const candidates = [firstInput, findCompatibleFileInput(files)].filter(Boolean);
   // Tarama sürerken menü kapanıp girdiyi öldürmüş olabilir; bağlı aday yoksa
   // taze bir girdi kurdur.

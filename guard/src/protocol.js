@@ -121,3 +121,8 @@ export function sizeKey(size) {
 // telemetriyi de Blob olarak gönderiyor ve onları engellemek sızıntıyı
 // durdurmaz, siteyi kırar.
 export const BINARY_BODY_FLOOR_BYTES = 4096;
+
+// Belge türü belli olmayan adsız gövde ancak bu boyutun üstündeyse yükleme
+// sayılır. Google telemetrisi (protobuf/log) 4-100 KB arası Blob gönderiyor;
+// sahada temiz PDF'te bile "adsız yükleme" uyarısı bu yüzden çıktı.
+export const LARGE_BINARY_BYTES = 256 * 1024;

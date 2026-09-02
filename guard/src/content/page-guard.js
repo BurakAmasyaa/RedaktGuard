@@ -10,6 +10,7 @@
 
 import {
   BINARY_BODY_FLOOR_BYTES,
+  LARGE_BINARY_BYTES,
   APPROVED_ATTRIBUTE,
   CONFIG_ATTRIBUTE,
   DROP_DELIVERY_ACK_ATTRIBUTE,
@@ -187,18 +188,21 @@ function filesIn(body) {
 // Adsız ikili gövdenin bayt uzunluğu. Siteler dosyayı kendi adını taşımayan
 // bir gövdeye sarıp imzalı URL'e PUT edebiliyor; o yol yalnız File ve FormData
 // aranırsa tamamen görünmez kalır ve maskelenmemiş belge ağa çıkar.
-function binaryBodySize(body) {
+function binaryBodyProbe(body) {
   if (!body || body instanceof File) return null;
-  if (body instanceof Blob) return body.size;
-  if (body instanceof ArrayBuffer) return body.byteLength;
-  if (ArrayBuffer.isView(body)) return body.byteLength;
+  if (body instanceof Blob) return { size: body.size, type: String(body.type || "") };
+  if (body instanceof ArrayBuffer) return { size: body.byteLength, type: "" };
+  if (ArrayBuffer.isView(body)) return { size: body.byteLength, type: "" };
   if (body instanceof FormData) {
     for (const value of body.values()) {
-      if (value instanceof Blob && !(value instanceof File)) return value.size;
+      if (value instanceof Blob && !(value instanceof File)) return { size: value.size, type: String(value.type || "") };
     }
   }
   return null;
 }
+
+// Belge gibi görünen MIME türleri. Telemetri protobuf/JSON/metin taşır.
+const DOCUMENT_MIME = /pdf|msword|officedocument|vnd\.ms-|rtf|octet-stream|zip|x-hwp/iu;
 
 // Engellenmesi gereken ilk dosyanın adını döndürür, yoksa null.
 // Gövdede dosya yoksa tek bir instanceof kontrolüyle çıkar: bu yol her
@@ -222,10 +226,15 @@ function offender(body) {
     // aranmaz: Gemini teslim ettiğimiz dosyayı parça parça (resumable) yüklüyor,
     // parça boyutu dosya boyutuna eşit olmadığı için kendi çıktımızı
     // engelliyorduk — temiz PDF'te bile "adsız yükleme" uyarısı çıkıyordu.
-    const size = binaryBodySize(body);
-    if (!config.blockUnscannable || size === null || size < BINARY_BODY_FLOOR_BYTES) return null;
+    const probe = binaryBodyProbe(body);
+    if (!config.blockUnscannable || !probe || probe.size < BINARY_BODY_FLOOR_BYTES) return null;
     const anyApproved = [...approved].some((key) => key.startsWith("#"));
-    return anyApproved ? null : "adsız yükleme";
+    if (anyApproved) return null;
+    // Telemetri ile belge ayrımı: belge MIME'ı taşıyorsa ya da gerçekten büyükse
+    // yükleme sayılır; küçük ve türsüz/protobuf gövde sayfanın kendi trafiğidir.
+    const documentLike = DOCUMENT_MIME.test(probe.type);
+    if (!documentLike && probe.size < LARGE_BINARY_BYTES) return null;
+    return "adsız yükleme";
   }
 
   for (const file of files) {

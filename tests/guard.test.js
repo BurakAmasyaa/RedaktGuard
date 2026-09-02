@@ -360,7 +360,7 @@ test("adsız Blob gövdesi yalnız kurumsal zorlamada yükleme sayılır", async
 
   // filesIn hâlâ yalnız File tanır: sıradan kullanımda siteler JSON ve
   // telemetriyi de Blob gönderir, onları dosya saymak siteyi kırar.
-  const filesIn = code.slice(code.indexOf("function filesIn("), code.indexOf("function binaryBodySize("));
+  const filesIn = code.slice(code.indexOf("function filesIn("), code.indexOf("function binaryBodyProbe("));
   assert.match(filesIn, /instanceof File/u);
   assert.doesNotMatch(filesIn, /instanceof Blob/u, "adsız Blob dosya sayılıyor");
 
@@ -368,7 +368,7 @@ test("adsız Blob gövdesi yalnız kurumsal zorlamada yükleme sayılır", async
   // O yol yalnız File aranırsa tamamen görünmez kalır. Zorlama açıkken
   // ("maskesiz gönderim yoktur") tanınmayan büyük ikili gövde durdurulur.
   const offender = code.slice(code.indexOf("function offender("), code.indexOf("function announce("));
-  assert.match(offender, /binaryBodySize\(body\)/u, "ikili gövde hiç incelenmiyor");
+  assert.match(offender, /binaryBodyProbe\(body\)/u, "ikili gövde hiç incelenmiyor");
   assert.match(offender, /!config\.blockUnscannable/u, "zorlama kapalıyken de engelliyor");
   assert.match(offender, /BINARY_BODY_FLOOR_BYTES/u, "küçük gövdeler için eşik yok");
   // Onaylı dosya varken gövde geçmeli; boyut eşitliği aranmamalı. Gemini teslim
@@ -893,4 +893,26 @@ test("kuyrukta bekleme sebebi doğru söylenir; ısınma başka sekme sanılmaz"
   assert.match(offscreen, /reason: "warmup"/u, "ısınma işi sebep taşımıyor");
   const panel = await source("guard/src/content/panel.js");
   assert.doesNotMatch(panel, /Diğer sekmedeki/u);
+});
+
+// Sahada temiz PDF'te bile "adsız yükleme" uyarısı çıktı; engellenen şey
+// Google telemetrisinin protobuf Blob'uydu. Belge MIME'ı taşımayan küçük
+// gövde yükleme sayılmamalı.
+test("adsız gövde kuralı telemetriyi belge sanmaz", async () => {
+  const code = await source("guard/src/content/page-guard.js");
+  assert.match(code, /const DOCUMENT_MIME = \/pdf\|msword/u, "belge MIME ayrımı yok");
+  assert.match(code, /!documentLike && probe\.size < LARGE_BINARY_BYTES/u, "küçük türsüz gövde hâlâ engelleniyor");
+  const { LARGE_BINARY_BYTES, BINARY_BODY_FLOOR_BYTES } = await import("../guard/src/protocol.js");
+  assert.ok(LARGE_BINARY_BYTES >= 128 * 1024 && LARGE_BINARY_BYTES > BINARY_BODY_FLOOR_BYTES);
+});
+
+// Panel "%100"de asılı kalınca iz, maskeleme sonrasını göstermiyordu; nerede
+// koptuğu okunamıyordu. Motor ve istemci maskeleme adımlarını işaretlemeli.
+test("maskeleme aşaması izde görünür", async () => {
+  const offscreen = await source("guard/src/offscreen.js");
+  assert.match(offscreen, /mark\("maskeleme bitti"/u);
+  assert.match(offscreen, /mark\("maskEnd gönderildi"\)/u);
+  const interceptor = await source("guard/src/content/interceptor.js");
+  assert.match(interceptor, /step: "istemci: maskEnd alındı"/u);
+  assert.match(interceptor, /step: "istemci: teslim başlıyor"/u);
 });

@@ -172,6 +172,7 @@ async function runMask(port, id, selectedIds) {
       onProgress: (progress) => send(port, { cmd: CMD.progress, id, ...progress }),
     });
 
+    mark("maskeleme bitti", `${result.bytes ? (result.bytes.length / 1048576).toFixed(1) : 0} MB · ${result.bytes ? chunkCount(result.bytes.length) : 0} parça`);
     // Yalnızca dosya adı maskelendiyse belge yeniden kodlanmaz; içerik betiği
     // özgün dosyayı yeni adla sarar.
     send(port, {
@@ -192,7 +193,9 @@ async function runMask(port, id, selectedIds) {
       }
     }
     send(port, { cmd: CMD.maskEnd, id });
+    mark("maskEnd gönderildi");
   } catch (error) {
+    mark("maskeleme hatası", String(error?.message || error).slice(0, 120));
     if (error?.name !== "AbortError") {
       send(port, {
         cmd: CMD.failure,
