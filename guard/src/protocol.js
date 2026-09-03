@@ -104,6 +104,11 @@ export const ENGINE_SILENCE_TIMEOUT_MS = 45_000;
 // "Tarama motoru yeniden kuruldu" ile bitti.
 export const ENGINE_HEARTBEAT_MS = 5_000;
 
+// Kalp atışının tavanı. Sessizlik bu kadar sürerse iş sağlıklı-yavaş değil
+// asılıdır; kalp atışı susar ve 45 sn sonra gözcü motoru yeniden kurar.
+// Kalp atışı sınırsız olsaydı gerçek bir asılma sonsuza kadar "yazılıyor" derdi.
+export const ENGINE_HEARTBEAT_MAX_MS = 5 * 60_000;
+
 export function extensionOf(filename) {
   const match = /\.([^.]+)$/u.exec(String(filename || "").toLowerCase());
   return match ? match[1] : "";

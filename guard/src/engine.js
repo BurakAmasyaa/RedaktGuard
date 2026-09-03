@@ -186,6 +186,17 @@ export async function scanDocument({ id, bytes, filename, profile = "balanced", 
   }
 }
 
+// PDF sayfa döngüsünün adımları; hangisinin uzadığı panelde ve izde görünsün.
+// Sahada tek sayfalık PDF "1/1"de asılı kaldı; sayfa içi adım görülemiyordu.
+const REDACT_STEP_DETAIL = Object.freeze({
+  render: "Sayfa çiziliyor.",
+  text: "Sayfa metni hizalanıyor.",
+  annotations: "Form alanları kapatılıyor.",
+  jpeg: "Sayfa görüntüye dönüştürülüyor.",
+  embedded: "Sayfa güvenli çıktıya eklendi.",
+  save: "Güvenli çıktı dosyası yazılıyor.",
+});
+
 export async function maskDocument({ id, selectedIds, signal, onProgress }) {
   const session = sessions.get(id);
   if (!session) throw new Error("Tarama oturumu bulunamadı; dosyayı yeniden bırakın.");
@@ -204,10 +215,10 @@ export async function maskDocument({ id, selectedIds, signal, onProgress }) {
         phase: "redacting",
         current: progress.current,
         total: progress.total,
+        step: progress.step || null,
         detail:
-          progress.kind === "image"
-            ? "Gömülü görseller maskeleniyor."
-            : "Sayfalar güvenli çıktıya dönüştürülüyor.",
+          REDACT_STEP_DETAIL[progress.step] ||
+          (progress.kind === "image" ? "Gömülü görseller maskeleniyor." : "Sayfalar güvenli çıktıya dönüştürülüyor."),
       });
     },
   });

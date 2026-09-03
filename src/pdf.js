@@ -5,6 +5,16 @@ import { processingConfig } from "./profiles.js";
 const PDF_MIME = "application/pdf";
 const MIN_TEXT_CHARACTERS = 8;
 const MAX_RENDER_EDGE = 2400;
+
+// pdf.js, "display" amaçlı çizimde operatör listesini parçalara böler ve her
+// parçadan sonrasını window.requestAnimationFrame ile planlar. rAF yalnızca
+// GÖRÜNÜR sekmelerde tetiklenir; gizli sekmede duraklatılır ve bir offscreen
+// belgede (uzantının maskeleme yaptığı yer) HİÇ tetiklenmez. Sonuç: page.render
+// sözü hiç dönmez, maskeleme "Sayfa çiziliyor / %100"de sonsuza dek asılır.
+// "print" amacı devamı microtask (Promise.resolve().then) ile planlar; bu her
+// görünürlük durumunda çalışır ve düzleştirilmiş çıktı için zaten doğru amaçtır.
+// Ölçümle doğrulandı: gizli sekmede display 15 sn+ asılırken print 0.1 sn'de çizdi.
+const RENDER_INTENT = "print";
 let pdfRuntimePromise = null;
 
 async function loadPdfRuntime() {
@@ -188,7 +198,7 @@ export async function scanPdf(arrayBuffer, filename, options = {}) {
         const canvas = canvasForPage(Math.ceil(ocrViewport.width), Math.ceil(ocrViewport.height), options.canvasFactory);
         const canvasContext = canvas.getContext("2d", { alpha: false });
         if (!canvasContext) throw new Error("OCR için PDF sayfası çizilemedi.");
-        await page.render({ canvas, canvasContext, viewport: ocrViewport, background: "#FFFFFF" }).promise;
+        await page.render({ canvas, canvasContext, viewport: ocrViewport, background: "#FFFFFF", intent: RENDER_INTENT }).promise;
         throwIfAborted(options.signal);
         const ocrResult = options.recognizeOcr
           ? await options.recognizeOcr(ocrWorker, await imageForOcr(canvas), { pageNumber, profile: profile.id })
@@ -408,8 +418,13 @@ export async function redactPdf(context, replacementMap, options = {}) {
       const canvas = canvasForPage(Math.ceil(viewport.width), Math.ceil(viewport.height), options.canvasFactory);
       const canvasContext = canvas.getContext("2d", { alpha: false });
       if (!canvasContext) throw new Error("PDF sayfası çizilemedi.");
-      await page.render({ canvas, canvasContext, viewport, background: "#FFFFFF" }).promise;
+      // Adım düzeyinde ilerleme: sayfa işlemenin hangi adımda uzadığı hem
+      // panelde hem izde görünsün. Sahada tek sayfalık PDF "1/1"de asılı kaldı;
+      // sayfa içi hangi adım olduğu görülemiyordu.
+      options.onProgress?.({ current: pageNumber, total: pdfDocument.numPages, step: "render" });
+      await page.render({ canvas, canvasContext, viewport, background: "#FFFFFF", intent: RENDER_INTENT }).promise;
 
+      options.onProgress?.({ current: pageNumber, total: pdfDocument.numPages, step: "text" });
       const textContent = await page.getTextContent({ disableNormalization: false });
       const extractedPage = context.pages[pageNumber - 1];
       const pageMap = extractedPage?.source === "ocr"
@@ -425,6 +440,7 @@ export async function redactPdf(context, replacementMap, options = {}) {
       // Eşleşen form alanının kutusu bütünüyle kapatılır. Alanın kendi
       // görünüm akışında glif konumu yok; harf harf boyamak yerine kutuyu
       // kapatmak hem kesin hem de bir form alanında görsel olarak doğrudur.
+      options.onProgress?.({ current: pageNumber, total: pdfDocument.numPages, step: "annotations" });
       for (const annotation of await pageAnnotations(page)) {
         const rect = annotation?.rect;
         if (!Array.isArray(rect) || rect.length < 4) continue;
@@ -438,7 +454,9 @@ export async function redactPdf(context, replacementMap, options = {}) {
         canvasContext.fillRect(Math.min(x1, x2), Math.min(y1, y2), Math.abs(x2 - x1), Math.abs(y2 - y1));
       }
 
+      options.onProgress?.({ current: pageNumber, total: pdfDocument.numPages, step: "jpeg" });
       const jpeg = await output.embedJpg(await canvasToJpeg(canvas));
+      options.onProgress?.({ current: pageNumber, total: pdfDocument.numPages, step: "embedded" });
       const outputPage = output.addPage([baseViewport.width, baseViewport.height]);
       outputPage.drawImage(jpeg, { x: 0, y: 0, width: baseViewport.width, height: baseViewport.height });
       page.cleanup();
@@ -449,6 +467,7 @@ export async function redactPdf(context, replacementMap, options = {}) {
     await loadingTask.destroy();
   }
 
+  options.onProgress?.({ current: pdfDocument.numPages, total: pdfDocument.numPages, step: "save" });
   return output.save({ useObjectStreams: true, addDefaultPage: false });
 }
 

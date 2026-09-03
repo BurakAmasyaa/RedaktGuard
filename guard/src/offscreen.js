@@ -2,7 +2,7 @@
 // içinde iç içe Worker açamadığı ve 147 MB'lık modeli bellekte tutamadığı için
 // tarama buradan yürür. İçerik betiği bu belgeye doğrudan bağlanır.
 
-import { CMD, ENGINE_HEARTBEAT_MS, ENGINE_RELAY_PORT, MSG } from "./protocol.js";
+import { CMD, ENGINE_HEARTBEAT_MAX_MS, ENGINE_HEARTBEAT_MS, ENGINE_RELAY_PORT, MSG } from "./protocol.js";
 import { bytesToBase64, base64ToBytes, chunkBytes, chunkCount, joinChunks } from "./transfer.js";
 import { maskDocument, maskTextUnit, release, scanDocument, scanTextUnit, warmUpEngine } from "./engine.js";
 
@@ -102,9 +102,21 @@ function send(port, payload) {
 // susar. PDF çıktısının yazılması (pdf-lib) yüzde 100'den sonra sessiz sürer;
 // WASM yolunda dakikayı aşabiliyor.
 function withHeartbeat(port, id, fallback, task) {
+  const startedAt = Date.now();
+  let beats = 0;
   const timer = setInterval(() => {
     const last = lastProgress.get(id);
     if (last && Date.now() - last.at < ENGINE_HEARTBEAT_MS) return;
+    // Tavan: bu kadar sessizlik sağlıklı-yavaş değil, asılı demektir. Sus ki
+    // gözcü devreye girsin; izde de görünsün.
+    const silentFor = Date.now() - (last?.at || startedAt);
+    if (silentFor > ENGINE_HEARTBEAT_MAX_MS) {
+      clearInterval(timer);
+      mark("kalp atışı tavana ulaştı", `${Math.round(silentFor / 1000)} sn sessiz · gözcüye bırakıldı`);
+      return;
+    }
+    beats += 1;
+    if (beats === 1 || beats % 6 === 0) mark("motor sessiz çalışıyor", `${last?.payload?.phase || fallback.phase} · ${Math.round(silentFor / 1000)} sn`);
     let payload = last ? { ...last.payload } : { cmd: CMD.progress, id, ...fallback };
     if (last && payload.phase === "redacting" && Number(payload.current) >= Number(payload.total)) {
       payload.detail = "Güvenli çıktı dosyası yazılıyor; büyük belgede bu adım uzun sürebilir.";
