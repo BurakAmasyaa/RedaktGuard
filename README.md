@@ -65,6 +65,19 @@ Intune / GPO ile Chrome ve Edge aynı politika adlarını kullanır:
 ve `runtime_allowed_hosts` ile site erişimini sabitler — Edge'deki 4. adım
 kullanıcıya kalmaz.
 
+Guard'ın çalışması gereken host'lar (izin listesine bunlar girer; alt alan adları dahil):
+
+```
+https://chatgpt.com/*      https://*.chatgpt.com/*      https://chat.openai.com/*
+https://claude.ai/*        https://*.claude.ai/*        https://claude.com/*        https://*.claude.com/*
+https://gemini.google.com/*
+https://copilot.microsoft.com/*   https://*.copilot.microsoft.com/*
+https://m365.cloud.microsoft/*    https://copilot.cloud.microsoft/*
+```
+
+Sitelerin kendi içerik kaynakları (`*.claudeusercontent.com`, `*.oaiusercontent.com` gibi)
+izin listesinde bulunabilir; Guard orada çalışmaz ve çalışması gerekmez.
+
 ## Geliştiriciler için
 
 Kodu değiştirdiyseniz paketi tazeleyin ve testleri koşturun:

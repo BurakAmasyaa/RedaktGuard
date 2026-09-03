@@ -98,6 +98,12 @@ export const CHUNK_BYTES = 512 * 1024;
 // sessizlik ancak offscreen belge kilitlendiğinde olur.
 export const ENGINE_SILENCE_TIMEOUT_MS = 45_000;
 
+// Motor sessiz ama sağlıklı çalışırken (PDF çıktısının yazılması, büyük belgenin
+// ayrıştırılması) bu aralıkla son ilerleme yeniden yayınlanır. Gözcü aksi hâlde
+// sağlıklı işi "sustu" sanıp motoru yeniden kuruyordu — sahada PDF %100'de
+// "Tarama motoru yeniden kuruldu" ile bitti.
+export const ENGINE_HEARTBEAT_MS = 5_000;
+
 export function extensionOf(filename) {
   const match = /\.([^.]+)$/u.exec(String(filename || "").toLowerCase());
   return match ? match[1] : "";

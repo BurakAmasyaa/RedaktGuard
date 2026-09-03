@@ -21,10 +21,17 @@
     {
       "matches": [
         "https://chatgpt.com/*",
+        "https://*.chatgpt.com/*",
         "https://chat.openai.com/*",
         "https://claude.ai/*",
+        "https://*.claude.ai/*",
+        "https://claude.com/*",
+        "https://*.claude.com/*",
         "https://gemini.google.com/*",
-        "https://copilot.microsoft.com/*"
+        "https://copilot.microsoft.com/*",
+        "https://*.copilot.microsoft.com/*",
+        "https://m365.cloud.microsoft/*",
+        "https://copilot.cloud.microsoft/*"
       ],
       "js": [
         "content/page-guard.js"
@@ -36,10 +43,17 @@
     {
       "matches": [
         "https://chatgpt.com/*",
+        "https://*.chatgpt.com/*",
         "https://chat.openai.com/*",
         "https://claude.ai/*",
+        "https://*.claude.ai/*",
+        "https://claude.com/*",
+        "https://*.claude.com/*",
         "https://gemini.google.com/*",
-        "https://copilot.microsoft.com/*"
+        "https://copilot.microsoft.com/*",
+        "https://*.copilot.microsoft.com/*",
+        "https://m365.cloud.microsoft/*",
+        "https://copilot.cloud.microsoft/*"
       ],
       "js": [
         "content/interceptor.js"

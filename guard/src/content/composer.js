@@ -13,7 +13,7 @@ const SITES = [
     send: "#composer-submit-button, button[data-testid='send-button']",
   },
   {
-    match: /(^|\.)claude\.ai$/u,
+    match: /(^|\.)claude\.(ai|com)$/u,
     editor: "div.ProseMirror[contenteditable='true']",
     send: "button[aria-label*='Send'], button[aria-label*='send']",
   },

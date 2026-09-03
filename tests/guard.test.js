@@ -952,3 +952,18 @@ test("boyut onayı zaman damgalı ve pencereli", async () => {
   assert.equal(parseSizeKey("#10"), null, "eski biçim geçerli sayılıyor");
   assert.ok(APPROVAL_WINDOW_MS >= 5 * 60 * 1000 && APPROVAL_WINDOW_MS <= 30 * 60 * 1000);
 });
+
+// Yönetilen tarayıcıda uzantı yalnız izinli host'larda çalışır; kurumsal izin
+// listeleri "*.claude.ai" biçimindedir ve Claude claude.com'a da yayılıyor.
+test("korunan adresler alt alan adlarını ve claude.com'u kapsar", async () => {
+  const { GUARDED_MATCHES, siteIdFor } = await import("../guard/src/hosts.js");
+  for (const match of ["https://*.claude.ai/*", "https://claude.com/*", "https://*.chatgpt.com/*"]) {
+    assert.ok(GUARDED_MATCHES.includes(match), `${match} eksik`);
+  }
+  assert.equal(siteIdFor("claude.com"), "claude");
+  assert.equal(siteIdFor("app.claude.ai"), "claude");
+  assert.equal(siteIdFor("chatgpt.com"), "chatgpt");
+  assert.equal(siteIdFor("evil-claude.ai"), null, "benzer ad korunan site sayıldı");
+  const composer = await source("guard/src/content/composer.js");
+  assert.match(composer, /claude\\\.\(ai\|com\)/u, "composer claude.com'u tanımıyor");
+});

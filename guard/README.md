@@ -227,6 +227,20 @@ Edge, Chrome ile aynı politika adlarını kullanır: Intune/GPO ile
 `ExtensionInstallForcelist` zorunlu kurar, `ExtensionSettings` kaldırmayı engeller ve
 `runtime_allowed_hosts` ile site erişimini sabitler — 2. adım böylece kullanıcıya kalmaz.
 
+Guard'ın çalışması gereken host'lar (izin listesine bunlar girer; alt alan adları dahil):
+
+```
+https://chatgpt.com/*      https://*.chatgpt.com/*      https://chat.openai.com/*
+https://claude.ai/*        https://*.claude.ai/*        https://claude.com/*        https://*.claude.com/*
+https://gemini.google.com/*
+https://copilot.microsoft.com/*   https://*.copilot.microsoft.com/*
+https://m365.cloud.microsoft/*    https://copilot.cloud.microsoft/*
+```
+
+Sitelerin kendi içerik kaynakları (`*.claudeusercontent.com`, `*.oaiusercontent.com` gibi)
+kurumsal izin listesinde bulunabilir; Guard orada çalışmaz ve çalışması gerekmez — yükleme
+kararı sohbet sayfasında verilir.
+
 **Takılırsa**
 
 Ayarlar → **Sorun giderme** → **Motoru sına**. İz, akışın nerede durduğunu adım adım

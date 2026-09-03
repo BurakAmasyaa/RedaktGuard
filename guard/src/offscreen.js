@@ -2,7 +2,7 @@
 // içinde iç içe Worker açamadığı ve 147 MB'lık modeli bellekte tutamadığı için
 // tarama buradan yürür. İçerik betiği bu belgeye doğrudan bağlanır.
 
-import { CMD, ENGINE_RELAY_PORT, MSG } from "./protocol.js";
+import { CMD, ENGINE_HEARTBEAT_MS, ENGINE_RELAY_PORT, MSG } from "./protocol.js";
 import { bytesToBase64, base64ToBytes, chunkBytes, chunkCount, joinChunks } from "./transfer.js";
 import { maskDocument, maskTextUnit, release, scanDocument, scanTextUnit, warmUpEngine } from "./engine.js";
 
@@ -83,12 +83,40 @@ function abortReason() {
   return new DOMException("İşlem iptal edildi.", "AbortError");
 }
 
+// Oturum başına son GERÇEK ilerleme; kalp atışı bunu yeniden yayınlar.
+const lastProgress = new Map();
+
 function send(port, payload) {
+  if (payload?.cmd === CMD.progress && payload.id && !payload.heartbeat) {
+    lastProgress.set(payload.id, { at: Date.now(), payload });
+  }
   try {
     port.postMessage(payload);
   } catch {
     // Sekme kapandıysa port ölür; taramanın kalanı release ile toplanır.
   }
+}
+
+// Uzun ama sağlıklı sessizlikte son ilerlemeyi yeniden yayınlar: istemcideki
+// 45 sn gözcüsü beslenir, panel de ne olduğunu söyler. Gerçek ilerleme geldiyse
+// susar. PDF çıktısının yazılması (pdf-lib) yüzde 100'den sonra sessiz sürer;
+// WASM yolunda dakikayı aşabiliyor.
+function withHeartbeat(port, id, fallback, task) {
+  const timer = setInterval(() => {
+    const last = lastProgress.get(id);
+    if (last && Date.now() - last.at < ENGINE_HEARTBEAT_MS) return;
+    let payload = last ? { ...last.payload } : { cmd: CMD.progress, id, ...fallback };
+    if (last && payload.phase === "redacting" && Number(payload.current) >= Number(payload.total)) {
+      payload.detail = "Güvenli çıktı dosyası yazılıyor; büyük belgede bu adım uzun sürebilir.";
+    }
+    send(port, { ...payload, heartbeat: true });
+  }, ENGINE_HEARTBEAT_MS);
+  return Promise.resolve()
+    .then(task)
+    .finally(() => {
+      clearInterval(timer);
+      lastProgress.delete(id);
+    });
 }
 
 // Chrome offscreen belgelerinde chrome.runtime dışındaki uzantı API'leri
@@ -130,7 +158,7 @@ async function runScan(port, id) {
       return;
     }
 
-    const result = await scanDocument({
+    const result = await withHeartbeat(port, id, { phase: "extracting", detail: "Belge işleniyor; büyük belgede bu adım sessiz sürebilir." }, () => scanDocument({
       id,
       bytes,
       filename: entry.filename,
@@ -138,7 +166,7 @@ async function runScan(port, id) {
       rules: ruleCache.rules,
       signal: entry.controller.signal,
       onProgress: (progress) => send(port, { cmd: CMD.progress, id, ...progress }),
-    });
+    }));
     // Kural sunucusu isteğe bağlı bir ek katmandır. Hiç yapılandırılmadıysa
     // yerel desen, alan etiketi, NER ve OCR hattı normal çalışır. Bir adres
     // özellikle yapılandırılmışsa erişim/bayatlık sessiz bir koruma düşüşüne
@@ -165,12 +193,12 @@ async function runScan(port, id) {
 async function runMask(port, id, selectedIds) {
   const entry = inbox.get(id);
   try {
-    const result = await maskDocument({
+    const result = await withHeartbeat(port, id, { phase: "redacting", detail: "Güvenli çıktı dosyası yazılıyor." }, () => maskDocument({
       id,
       selectedIds,
       signal: entry?.controller.signal,
       onProgress: (progress) => send(port, { cmd: CMD.progress, id, ...progress }),
-    });
+    }));
 
     mark("maskeleme bitti", `${result.bytes ? (result.bytes.length / 1048576).toFixed(1) : 0} MB · ${result.bytes ? chunkCount(result.bytes.length) : 0} parça`);
     // Yalnızca dosya adı maskelendiyse belge yeniden kodlanmaz; içerik betiği
