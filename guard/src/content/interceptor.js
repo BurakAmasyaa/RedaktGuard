@@ -243,6 +243,21 @@ function blockingReason(items, fallback) {
   return titles.length ? titles.slice(0, 2).join(" ") : fallback;
 }
 
+const PROTECTION_ERROR_CODES = new Set([
+  "model-external-data",
+  "model-assets-unavailable",
+  "wasm-runtime",
+  "webgpu-runtime",
+  "inference-runtime",
+  "model-unavailable",
+  "corporate-rules-stale",
+]);
+
+function incompleteProtectionCode(items) {
+  const code = (Array.isArray(items) ? items : []).find((item) => PROTECTION_ERROR_CODES.has(item?.code))?.code;
+  return code || "incomplete-protection";
+}
+
 // ---------------------------------------------------------------- motor bağlantısı
 
 class EnginePort {
@@ -606,7 +621,7 @@ async function guardFiles(files, deliver) {
     if (enforcement.action === "block") {
       const warnings = scanned.flatMap((item) => item.warnings || []);
       toast(`Gönderim durduruldu: ${blockingReason(warnings, "Tarama bütün koruma katmanlarıyla tamamlanamadı.")}`);
-      return finish(null, { outcome: "blocked", errorCode: "incomplete-protection" });
+      return finish(null, { outcome: "blocked", errorCode: incompleteProtectionCode(warnings) });
     }
     // Tam taramada hiçbir şey bulunmadıysa içerik güvenle değişmeden geçer.
     if (enforcement.action === "clean") {
@@ -693,6 +708,7 @@ function ruleWarnings() {
   return [
     {
       title: "Kurumsal kural listesi güncel değil.",
+      code: "corporate-rules-stale",
       detail: "Redakt sunucusuna ulaşılamadı; şirkete özel adlar bu promptta maskelenmemiş olabilir.",
     },
   ];
@@ -836,7 +852,7 @@ async function guardPrompt({ text, findings, deferred, useModel, composer, caret
     if (enforcement.action === "block") {
       toast(`Prompt gönderimi durduruldu: ${blockingReason(warnings, "Tarama bütün koruma katmanlarıyla tamamlanamadı.")}`);
       diagnosticOutcome = "blocked";
-      diagnosticError = "incomplete-protection";
+      diagnosticError = incompleteProtectionCode(warnings);
       return;
     }
     if (enforcement.action === "clean") {

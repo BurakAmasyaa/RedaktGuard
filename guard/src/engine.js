@@ -57,6 +57,16 @@ function abortIfCancelled(signal) {
   if (signal?.aborted) throw signal.reason || new DOMException("İşlem iptal edildi.", "AbortError");
 }
 
+function modelFailureCode(error) {
+  const detail = `${error?.name || ""} ${error?.message || ""} ${error?.detail || ""}`.toLowerCase();
+  if (/external data/u.test(detail)) return "model-external-data";
+  if (/404|failed to fetch|fetch failed|could not locate|not found|no such file|enoent/u.test(detail)) return "model-assets-unavailable";
+  if (/webassembly|wasm|sharedarraybuffer|pthread|thread/u.test(detail)) return "wasm-runtime";
+  if (/webgpu|gpu|adapter/u.test(detail)) return "webgpu-runtime";
+  if (/onnx|backend|session|inference/u.test(detail)) return "inference-runtime";
+  return "model-unavailable";
+}
+
 export async function scanDocument({ id, bytes, filename, profile = "balanced", rules = [], signal, onProgress }) {
   release(id);
   let context = null;
@@ -155,6 +165,7 @@ export async function scanDocument({ id, bytes, filename, profile = "balanced", 
       // kullanıcı göndermeden önce bilmeli.
       warnings.push({
         title: "Kişi ve kurum adları aranamadı.",
+        code: modelFailureCode(error),
         detail: `Bu belgede isimler maskelenmemiş olabilir; yalnızca e-posta, telefon, IBAN, T.C. kimlik, kart numaraları ve kurumsal kurallar uygulandı.${
           error?.detail ? ` (${error.detail})` : ""
         }`,
@@ -268,6 +279,7 @@ export async function scanTextUnit({ id, text, profile = "balanced", rules = [],
     if (error?.name === "AbortError") throw error;
     warnings.push({
       title: "Kişi ve kurum adları aranamadı.",
+      code: modelFailureCode(error),
       detail: "Bu promptta isimler maskelenmemiş olabilir; desen ve kurumsal kural katmanları uygulandı.",
     });
   }

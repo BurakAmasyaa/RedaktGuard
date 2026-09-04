@@ -73,6 +73,20 @@ function buildPipeline(device, progressCallback) {
   });
 }
 
+async function buildPipelineWithWasmFallback(device, progressCallback) {
+  try {
+    return await buildPipeline(device, progressCallback);
+  } catch (error) {
+    // Bazı Windows/VM ortamları crossOriginIsolated bildirse de ORT'nin iç
+    // worker'larını başlatamıyor. Çok iş parçacıklı WASM oturumu kurulamazsa
+    // aynı yerel modeli tek iş parçacığıyla bir kez daha dene. Doğruluk aynı;
+    // yalnız ilk yükleme ve çıkarım daha yavaş olur.
+    if (device !== "wasm" || Number(env.backends.onnx.wasm.numThreads) <= 1) throw error;
+    env.backends.onnx.wasm.numThreads = 1;
+    return buildPipeline(device, progressCallback);
+  }
+}
+
 function loadModel(progressCallback) {
   if (!modelPromise) {
     modelPromise = (async () => {
@@ -81,7 +95,7 @@ function loadModel(progressCallback) {
       for (const device of order) {
         if (device === "webgpu" && !globalThis.navigator?.gpu) continue;
         try {
-          const classifier = await buildPipeline(device, progressCallback);
+          const classifier = await buildPipelineWithWasmFallback(device, progressCallback);
           activeDevice = device;
           return classifier;
         } catch (error) {

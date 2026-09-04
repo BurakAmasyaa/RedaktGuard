@@ -201,6 +201,7 @@ async function runScan(port, id) {
     if (settings.serverUrl && ruleCache.status !== "ready") {
       result.warnings.push({
         title: "Kurumsal kural listesi güncel değil.",
+        code: "corporate-rules-stale",
         detail: ruleCache.message || "Redakt sunucusu yapılandırılmadı veya kurallara ulaşılamadı.",
       });
     }

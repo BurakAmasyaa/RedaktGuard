@@ -285,11 +285,22 @@ async function validateOutput(fixture, received, label) {
   }
 }
 
-async function readOutcome(client, sessionId, site, fixture) {
-  const received = await waitUntil(
-    () => evaluate(client, sessionId, "window.__redaktFixture && window.__redaktFixture.received[0] || null"),
+async function readOutcome(client, target, site, fixture, previousOperationIds) {
+  const sessionId = target.sessionId;
+  const outcome = await waitUntil(
+    async () => {
+      const received = await evaluate(client, sessionId, "window.__redaktFixture && window.__redaktFixture.received[0] || null");
+      if (received) return { received };
+      const diagnostic = await extensionMessage(client, target, MSG.readDiagnostics).catch(() => null);
+      const terminal = diagnostic?.report?.recentOperations?.find((event) => !previousOperationIds.has(event.operationId));
+      return terminal ? { terminal } : null;
+    },
     { message: `${site}/${fixture.id} güvenli dosyayı teslim alamadı.` }
   );
+  if (outcome.terminal) {
+    throw new Error(`${site}/${fixture.id} Guard tarafından ${outcome.terminal.outcome}: ${outcome.terminal.errorCode || "unknown"}`);
+  }
+  const { received } = outcome;
   assert.equal((await evaluate(client, sessionId, "window.__redaktFixture.received.length")), 1, `${site}: dosya birden fazla teslim edildi`);
   await validateOutput(fixture, received, `${site}/${fixture.id}`);
   assert.deepEqual(await evaluate(client, sessionId, "window.__redaktFixture.errors"), [], `${site}: fixture dosyayı okuyamadı`);
@@ -352,9 +363,11 @@ async function runBrowser(kind, binary, fixtures) {
         const target = await fixtureTarget(browser.client, site);
         try {
           process.stdout.write(`[${kind}] ${site.id}/${fixture.id} · taranıyor\n`);
+          const before = await extensionMessage(browser.client, target, MSG.readDiagnostics);
+          const previousOperationIds = new Set((before?.report?.recentOperations || []).map((event) => event.operationId));
           await triggerFile(browser.client, target.sessionId, fixture);
           try {
-            results.push(await readOutcome(browser.client, target.sessionId, site.id, fixture));
+            results.push(await readOutcome(browser.client, target, site.id, fixture, previousOperationIds));
           } catch (error) {
             const diagnostics = await extensionMessage(browser.client, target, MSG.readDiagnostics).catch(() => null);
             if (diagnostics?.report) process.stderr.write(`PII-siz tanılama: ${JSON.stringify(diagnostics.report)}\n`);
@@ -371,8 +384,12 @@ async function runBrowser(kind, binary, fixtures) {
     // sınanır: iki ayrı site aynı anda dosya bırakır ve ikisi de tek kopya alır.
     const concurrent = await Promise.all(sites.slice(0, 2).map((site) => fixtureTarget(browser.client, site)));
     try {
+      const previousIds = await Promise.all(concurrent.map(async (target) => {
+        const before = await extensionMessage(browser.client, target, MSG.readDiagnostics);
+        return new Set((before?.report?.recentOperations || []).map((event) => event.operationId));
+      }));
       await Promise.all(concurrent.map((target, index) => triggerFile(browser.client, target.sessionId, fixtures[0], `parallel-${index}`)));
-      results.push(...await Promise.all(concurrent.map((target, index) => readOutcome(browser.client, target.sessionId, `${sites[index].id}-parallel`, fixtures[0]))));
+      results.push(...await Promise.all(concurrent.map((target, index) => readOutcome(browser.client, target, `${sites[index].id}-parallel`, fixtures[0], previousIds[index]))));
     } finally {
       for (const target of concurrent) {
         target.remove();

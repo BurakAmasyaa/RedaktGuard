@@ -158,6 +158,17 @@ test("tanılama olayı yalnız allowlist alanlarını taşır", () => {
   }).formats, ["pdf"], "dosya uzantısı görünümündeki serbest veri rapora girdi");
 });
 
+test("WASM çok iş parçacığı kurulamazsa tek iş parçacığıyla güvenli geri dönüş yapılır", async () => {
+  const ner = await source("src/ner.js");
+  assert.match(ner, /buildPipelineWithWasmFallback/u);
+  assert.match(ner, /device !== "wasm"/u);
+  assert.match(ner, /env\.backends\.onnx\.wasm\.numThreads = 1/u);
+  const engine = await source("guard/src/engine.js");
+  assert.match(engine, /code: modelFailureCode\(error\)/u);
+  const interceptor = await source("guard/src/content/interceptor.js");
+  assert.match(interceptor, /incompleteProtectionCode\(warnings\)/u);
+});
+
 test("indirilen tanılama raporu tarayıcı ve aşamaları gösterir, ham izi göstermez", () => {
   const report = createDiagnosticReport({
     version: "1.0.5",
@@ -220,6 +231,7 @@ test("Chrome ve Edge E2E paketi gerçek site originlerinde izole fixture çalı�
   assert.match(workflow, /--timeout=600000/u, "Windows ilk model ısınması için E2E zaman aşımı kısa");
   assert.match(runner, /GUARD_E2E_CHROME_BINARY/u, "yerel Chrome for Testing yolu seçilemiyor");
   assert.match(runner, /verifyDiagnosticReport/u, "tarayıcı testi tanılama entegrasyonunu doğrulamıyor");
+  assert.match(runner, /Guard tarafından.*errorCode/u, "fail-closed sonuç E2E'de zaman aşımına bırakılıyor");
   assert.match(workflow, /tags:\s*\n\s*- "v\*"/u);
   assert.equal(pkg.scripts["test:e2e"], "node tests/e2e/run.mjs");
 });
