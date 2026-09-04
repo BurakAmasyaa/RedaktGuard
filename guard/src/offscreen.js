@@ -85,10 +85,21 @@ function abortReason() {
 
 // Oturum başına son GERÇEK ilerleme; kalp atışı bunu yeniden yayınlar.
 const lastProgress = new Map();
+const lastMarkedProgress = new Map();
 
 function send(port, payload) {
   if (payload?.cmd === CMD.progress && payload.id && !payload.heartbeat) {
     lastProgress.set(payload.id, { at: Date.now(), payload });
+    if (payload.phase === "redacting" && payload.step) {
+      const progressKey = `${payload.step}:${payload.pageNumber || 0}:${payload.pageTotal || 0}`;
+      if (lastMarkedProgress.get(payload.id) !== progressKey) {
+        lastMarkedProgress.set(payload.id, progressKey);
+        const page = payload.pageNumber && payload.pageTotal
+          ? ` · sayfa ${payload.pageNumber}/${payload.pageTotal}`
+          : "";
+        mark("maskeleme adımı", `${payload.step}${page}`);
+      }
+    }
   }
   try {
     port.postMessage(payload);
@@ -118,7 +129,10 @@ function withHeartbeat(port, id, fallback, task) {
     beats += 1;
     if (beats === 1 || beats % 6 === 0) mark("motor sessiz çalışıyor", `${last?.payload?.phase || fallback.phase} · ${Math.round(silentFor / 1000)} sn`);
     let payload = last ? { ...last.payload } : { cmd: CMD.progress, id, ...fallback };
-    if (last && payload.phase === "redacting" && Number(payload.current) >= Number(payload.total)) {
+    // Yalnız gerçek `save` adımını dosya yazımı diye adlandır. Eski sayfa
+    // sayacı tek sayfalık belgenin render başlangıcında 1/1 gönderdiği için
+    // heartbeat, asıl takılma "render" iken kullanıcıya "yazılıyor" diyordu.
+    if (last && payload.phase === "redacting" && payload.step === "save") {
       payload.detail = "Güvenli çıktı dosyası yazılıyor; büyük belgede bu adım uzun sürebilir.";
     }
     send(port, { ...payload, heartbeat: true });
@@ -128,6 +142,7 @@ function withHeartbeat(port, id, fallback, task) {
     .finally(() => {
       clearInterval(timer);
       lastProgress.delete(id);
+      lastMarkedProgress.delete(id);
     });
 }
 

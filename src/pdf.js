@@ -5,6 +5,7 @@ import { processingConfig } from "./profiles.js";
 const PDF_MIME = "application/pdf";
 const MIN_TEXT_CHARACTERS = 8;
 const MAX_RENDER_EDGE = 2400;
+export const PDF_RENDER_TIMEOUT_MS = 2 * 60_000;
 
 // pdf.js, "display" amaçlı çizimde operatör listesini parçalara böler ve her
 // parçadan sonrasını window.requestAnimationFrame ile planlar. rAF yalnızca
@@ -91,6 +92,91 @@ function throwIfAborted(signal) {
   if (signal?.aborted) throw signal.reason || new DOMException("İşlem iptal edildi.", "AbortError");
 }
 
+function renderTimeoutError(timeoutMs) {
+  const seconds = Math.max(1, Math.round(timeoutMs / 1000));
+  const error = new Error(`PDF sayfası ${seconds} saniye içinde çizilemedi; gönderim güvenlik için durduruldu.`);
+  error.name = "TimeoutError";
+  return error;
+}
+
+function continueRenderAfterEventLoop(callback) {
+  // Gizli sekmelerde setTimeout yoğun biçimde kısılabilir. MessageChannel bir
+  // sonraki task'a geçerek heartbeat/zaman aşımına çalışma fırsatı verir fakat
+  // her pdf.js parçasını bir saniyelik gizli-sekme timer'ına dönüştürmez.
+  if (typeof MessageChannel === "function") {
+    const channel = new MessageChannel();
+    channel.port1.onmessage = () => {
+      channel.port1.close();
+      channel.port2.close();
+      callback();
+    };
+    channel.port2.postMessage(null);
+    return;
+  }
+  setTimeout(callback, 0);
+}
+
+// RenderTask elde tutulmadan yalnız `.promise` beklenirse AbortSignal çalışan
+// pdf.js işini durduramaz. Gizli offscreen belgede takılan bir sayfa da motoru
+// süresiz kilitler. Bu sarmalayıcı hem iptali RenderTask.cancel()'a bağlar hem
+// sayfa başına kesin bir üst süre uygular. onContinue'daki kısa event-loop geçişi
+// print render'ın yoğun microtask zincirinin timer/heartbeat'i aç bırakmasını
+// önler.
+export function renderPdfPage(page, parameters, options = {}) {
+  const signal = options.signal;
+  const timeoutMs = Number.isFinite(options.timeoutMs) && options.timeoutMs > 0
+    ? options.timeoutMs
+    : PDF_RENDER_TIMEOUT_MS;
+  throwIfAborted(signal);
+
+  let task;
+  try {
+    task = page.render({ ...parameters, intent: RENDER_INTENT });
+  } catch (error) {
+    return Promise.reject(error);
+  }
+
+  if (!task?.promise || typeof task.cancel !== "function") {
+    return Promise.reject(new Error("PDF çizim görevi başlatılamadı; gönderim güvenlik için durduruldu."));
+  }
+
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let interruptedBy = null;
+
+    const finish = (handler, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", abort);
+      handler(value);
+    };
+    const cancel = (reason) => {
+      if (settled) return;
+      interruptedBy = reason;
+      try {
+        task.cancel();
+      } catch {
+        // Aşağıdaki açık hata yine çağırana döner; iptal hatası onu gölgelememeli.
+      }
+      finish(reject, reason);
+    };
+    const abort = () => cancel(signal.reason || new DOMException("İşlem iptal edildi.", "AbortError"));
+    const timer = setTimeout(() => cancel(renderTimeoutError(timeoutMs)), timeoutMs);
+
+    signal?.addEventListener("abort", abort, { once: true });
+    task.onContinue = (continueCallback) => {
+      continueRenderAfterEventLoop(() => {
+        if (!settled) continueCallback();
+      });
+    };
+    Promise.resolve(task.promise).then(
+      (value) => finish(resolve, value),
+      (error) => finish(reject, interruptedBy || error)
+    );
+  });
+}
+
 function buildOcrPageText(words, scale) {
   let text = "";
   const records = [];
@@ -163,11 +249,13 @@ function annotationValues(annotation) {
 //   - tarama "any" ile yapılır: üst küme, hiçbir bulgu raporun dışında kalmasın;
 //   - karartma çizimle AYNI amaçla yapılır: çizilen her şey kapatılsın, çizilmeyen
 //     alana boşuna siyah kutu basılmasın.
-async function pageAnnotations(page, intent = RENDER_INTENT) {
+export async function pageAnnotations(page, intent = RENDER_INTENT) {
   try {
     return await page.getAnnotations({ intent });
-  } catch {
-    return [];
+  } catch (cause) {
+    const error = new Error("PDF form alanları güvenli biçimde okunamadı; gönderim durduruldu.", { cause });
+    error.name = "PdfAnnotationError";
+    throw error;
   }
 }
 
@@ -206,7 +294,11 @@ export async function scanPdf(arrayBuffer, filename, options = {}) {
         const canvas = canvasForPage(Math.ceil(ocrViewport.width), Math.ceil(ocrViewport.height), options.canvasFactory);
         const canvasContext = canvas.getContext("2d", { alpha: false });
         if (!canvasContext) throw new Error("OCR için PDF sayfası çizilemedi.");
-        await page.render({ canvas, canvasContext, viewport: ocrViewport, background: "#FFFFFF", intent: RENDER_INTENT }).promise;
+        await renderPdfPage(
+          page,
+          { canvas, canvasContext, viewport: ocrViewport, background: "#FFFFFF" },
+          { signal: options.signal, timeoutMs: options.renderTimeoutMs }
+        );
         throwIfAborted(options.signal);
         const ocrResult = options.recognizeOcr
           ? await options.recognizeOcr(ocrWorker, await imageForOcr(canvas), { pageNumber, profile: profile.id })
@@ -410,6 +502,37 @@ function paintOcrRedactions(context, segments, scale) {
   }
 }
 
+const REDACTION_STEPS_PER_PAGE = 4;
+const REDACTION_STEP_OFFSET = Object.freeze({
+  render: 0,
+  text: 1,
+  annotations: 2,
+  jpeg: 3,
+  embedded: REDACTION_STEPS_PER_PAGE,
+});
+
+// `current/total` sayfa sayısı değil tamamlanan iş birimidir. Böylece tek
+// sayfalık bir belge render başlamadan %100 görünmez; %100 yalnız PDF baytları
+// gerçekten üretildikten sonra yayınlanır. pageNumber/pageTotal ise panel ve
+// tanılama izi için gerçek sayfa bilgisini korur.
+export function pdfRedactionProgress(pageNumber, pageTotal, step) {
+  const pages = Math.max(1, Number(pageTotal) || 1);
+  const page = Math.min(pages, Math.max(1, Number(pageNumber) || 1));
+  const total = pages * REDACTION_STEPS_PER_PAGE + 1;
+
+  if (step === "complete") return { current: total, total, step, pageNumber: page, pageTotal: pages };
+  if (step === "save") return { current: total - 1, total, step, pageNumber: page, pageTotal: pages };
+  if (!(step in REDACTION_STEP_OFFSET)) throw new RangeError(`Bilinmeyen PDF maskeleme adımı: ${step}`);
+
+  return {
+    current: (page - 1) * REDACTION_STEPS_PER_PAGE + REDACTION_STEP_OFFSET[step],
+    total,
+    step,
+    pageNumber: page,
+    pageTotal: pages,
+  };
+}
+
 export async function redactPdf(context, replacementMap, options = {}) {
   const { runtime, document: pdfDocument, loadingTask } = await openPdf(context.bytes);
   const output = await PDFDocument.create();
@@ -420,7 +543,6 @@ export async function redactPdf(context, replacementMap, options = {}) {
   try {
     for (let pageNumber = 1; pageNumber <= pdfDocument.numPages; pageNumber += 1) {
       throwIfAborted(options.signal);
-      options.onProgress?.({ current: pageNumber, total: pdfDocument.numPages });
       const page = await pdfDocument.getPage(pageNumber);
       const baseViewport = page.getViewport({ scale: 1 });
       const renderScale = Math.min(2, MAX_RENDER_EDGE / Math.max(baseViewport.width, baseViewport.height));
@@ -431,10 +553,14 @@ export async function redactPdf(context, replacementMap, options = {}) {
       // Adım düzeyinde ilerleme: sayfa işlemenin hangi adımda uzadığı hem
       // panelde hem izde görünsün. Sahada tek sayfalık PDF "1/1"de asılı kaldı;
       // sayfa içi hangi adım olduğu görülemiyordu.
-      options.onProgress?.({ current: pageNumber, total: pdfDocument.numPages, step: "render" });
-      await page.render({ canvas, canvasContext, viewport, background: "#FFFFFF", intent: RENDER_INTENT }).promise;
+      options.onProgress?.(pdfRedactionProgress(pageNumber, pdfDocument.numPages, "render"));
+      await renderPdfPage(
+        page,
+        { canvas, canvasContext, viewport, background: "#FFFFFF" },
+        { signal: options.signal, timeoutMs: options.renderTimeoutMs }
+      );
 
-      options.onProgress?.({ current: pageNumber, total: pdfDocument.numPages, step: "text" });
+      options.onProgress?.(pdfRedactionProgress(pageNumber, pdfDocument.numPages, "text"));
       const textContent = await page.getTextContent({ disableNormalization: false });
       const extractedPage = context.pages[pageNumber - 1];
       const pageMap = extractedPage?.source === "ocr"
@@ -450,7 +576,7 @@ export async function redactPdf(context, replacementMap, options = {}) {
       // Eşleşen form alanının kutusu bütünüyle kapatılır. Alanın kendi
       // görünüm akışında glif konumu yok; harf harf boyamak yerine kutuyu
       // kapatmak hem kesin hem de bir form alanında görsel olarak doğrudur.
-      options.onProgress?.({ current: pageNumber, total: pdfDocument.numPages, step: "annotations" });
+      options.onProgress?.(pdfRedactionProgress(pageNumber, pdfDocument.numPages, "annotations"));
       for (const annotation of await pageAnnotations(page)) {
         const rect = annotation?.rect;
         if (!Array.isArray(rect) || rect.length < 4) continue;
@@ -464,21 +590,23 @@ export async function redactPdf(context, replacementMap, options = {}) {
         canvasContext.fillRect(Math.min(x1, x2), Math.min(y1, y2), Math.abs(x2 - x1), Math.abs(y2 - y1));
       }
 
-      options.onProgress?.({ current: pageNumber, total: pdfDocument.numPages, step: "jpeg" });
+      options.onProgress?.(pdfRedactionProgress(pageNumber, pdfDocument.numPages, "jpeg"));
       const jpeg = await output.embedJpg(await canvasToJpeg(canvas));
-      options.onProgress?.({ current: pageNumber, total: pdfDocument.numPages, step: "embedded" });
       const outputPage = output.addPage([baseViewport.width, baseViewport.height]);
       outputPage.drawImage(jpeg, { x: 0, y: 0, width: baseViewport.width, height: baseViewport.height });
       page.cleanup();
       canvas.width = 1;
       canvas.height = 1;
+      options.onProgress?.(pdfRedactionProgress(pageNumber, pdfDocument.numPages, "embedded"));
     }
   } finally {
     await loadingTask.destroy();
   }
 
-  options.onProgress?.({ current: pdfDocument.numPages, total: pdfDocument.numPages, step: "save" });
-  return output.save({ useObjectStreams: true, addDefaultPage: false });
+  options.onProgress?.(pdfRedactionProgress(pdfDocument.numPages, pdfDocument.numPages, "save"));
+  const result = await output.save({ useObjectStreams: true, addDefaultPage: false });
+  options.onProgress?.(pdfRedactionProgress(pdfDocument.numPages, pdfDocument.numPages, "complete"));
+  return result;
 }
 
 export { PDF_MIME };

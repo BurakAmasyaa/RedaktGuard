@@ -195,6 +195,7 @@ const REDACT_STEP_DETAIL = Object.freeze({
   jpeg: "Sayfa görüntüye dönüştürülüyor.",
   embedded: "Sayfa güvenli çıktıya eklendi.",
   save: "Güvenli çıktı dosyası yazılıyor.",
+  complete: "Güvenli çıktı hazır.",
 });
 
 export async function maskDocument({ id, selectedIds, signal, onProgress }) {
@@ -216,6 +217,8 @@ export async function maskDocument({ id, selectedIds, signal, onProgress }) {
         current: progress.current,
         total: progress.total,
         step: progress.step || null,
+        pageNumber: progress.pageNumber || null,
+        pageTotal: progress.pageTotal || null,
         detail:
           REDACT_STEP_DETAIL[progress.step] ||
           (progress.kind === "image" ? "Gömülü görseller maskeleniyor." : "Sayfalar güvenli çıktıya dönüştürülüyor."),

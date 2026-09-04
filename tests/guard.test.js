@@ -911,11 +911,30 @@ test("adsız gövde kuralı telemetriyi belge sanmaz", async () => {
 // koptuğu okunamıyordu. Motor ve istemci maskeleme adımlarını işaretlemeli.
 test("maskeleme aşaması izde görünür", async () => {
   const offscreen = await source("guard/src/offscreen.js");
+  assert.match(offscreen, /mark\("maskeleme adımı"/u);
   assert.match(offscreen, /mark\("maskeleme bitti"/u);
   assert.match(offscreen, /mark\("maskEnd gönderildi"\)/u);
   const interceptor = await source("guard/src/content/interceptor.js");
   assert.match(interceptor, /step: "istemci: maskEnd alındı"/u);
   assert.match(interceptor, /step: "istemci: teslim başlıyor"/u);
+});
+
+test("PDF heartbeat yalnız gerçek kayıt adımını dosya yazımı diye gösterir", async () => {
+  const offscreen = await source("guard/src/offscreen.js");
+  assert.match(offscreen, /payload\.step === "save"/u);
+  assert.doesNotMatch(
+    offscreen,
+    /payload\.phase === "redacting" && Number\(payload\.current\) >= Number\(payload\.total\)/u,
+    "render başlangıcı toplam sayfa sayısına eşit diye kayıt adımı sanılıyor"
+  );
+});
+
+test("iki PDF render yolu da iptal ve zaman aşımı sarmalayıcısından geçer", async () => {
+  const pdf = await source("src/pdf.js");
+  assert.equal((pdf.match(/await renderPdfPage\(/gu) || []).length, 2, "OCR ve redaksiyon render yolları birlikte korunmuyor");
+  assert.doesNotMatch(pdf, /await page\.render\([^;]+\.promise/gu, "çıplak RenderTask promise bekleniyor");
+  assert.match(pdf, /task\.cancel\(\)/u, "AbortSignal gerçek pdf.js işini iptal etmiyor");
+  assert.match(pdf, /PDF_RENDER_TIMEOUT_MS/u, "sayfa başına kesin üst süre yok");
 });
 
 // ---------------------------------------------------------------- oturum incelemesi regresyonları
