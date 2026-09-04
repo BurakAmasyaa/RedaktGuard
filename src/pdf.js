@@ -155,9 +155,17 @@ function annotationValues(annotation) {
   return values.filter((value) => value.trim());
 }
 
-async function pageAnnotations(page) {
+// Ek açıklama listesi amaca göre FİLTRELENİR: "display" yalnız görüntülenebilir,
+// "print" yalnız basılabilir olanları verir. Bu ikisi aynı küme değildir; bir
+// alan "Print açık + NoView" olabilir. Sayfayı print amacıyla çizip ek açıklamayı
+// display amacıyla sorsaydık, böyle bir alan çıktıya ÇİZİLİR ama taranmadığı ve
+// karartılmadığı için okunur biçimde sızardı. Bu yüzden:
+//   - tarama "any" ile yapılır: üst küme, hiçbir bulgu raporun dışında kalmasın;
+//   - karartma çizimle AYNI amaçla yapılır: çizilen her şey kapatılsın, çizilmeyen
+//     alana boşuna siyah kutu basılmasın.
+async function pageAnnotations(page, intent = RENDER_INTENT) {
   try {
-    return await page.getAnnotations({ intent: "display" });
+    return await page.getAnnotations({ intent });
   } catch {
     return [];
   }
@@ -211,7 +219,9 @@ export async function scanPdf(arrayBuffer, filename, options = {}) {
       }
 
       totalCharacters += pageMap.text.replace(/\s/gu, "").length;
-      const formValues = (await pageAnnotations(page)).flatMap(annotationValues);
+      // Taramada üst küme: görüntülenebilir olmayan ama basılabilir alanlar da
+      // bulgulara girsin; hiçbir kişisel veri rapordan kaçmasın.
+      const formValues = (await pageAnnotations(page, "any")).flatMap(annotationValues);
       totalCharacters += formValues.join("").replace(/\s/gu, "").length;
       pages.push({ ...pageMap, pageNumber, width: viewport.width, height: viewport.height, formValues });
       page.cleanup();
