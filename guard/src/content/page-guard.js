@@ -275,8 +275,66 @@ function offender(body, sniffedDocument = false) {
   return null;
 }
 
+function announcePage(type, payload = {}) {
+  window.postMessage({ __redaktGuard: GUARD_MARK, type, ...payload }, location.origin);
+}
+
 function announce(filename) {
-  window.postMessage({ __redaktGuard: GUARD_MARK, type: PAGE.blocked, filename }, location.origin);
+  announcePage(PAGE.blocked, { filename });
+}
+
+function approvedUpload(body, sniffedDocument = false) {
+  const approved = new Set(readJson(APPROVED_ATTRIBUTE) || []);
+  const files = filesIn(body);
+  if (files.some((file) => approved.has(`${String(file.name || "")}|${file.size}`))) return true;
+
+  // Gemini güvenli File'ı parçalı, adsız Blob/ArrayBuffer gövdelerine çevirebilir.
+  // Eski bir onayın sıradan telemetriyi "yükleme" saymaması için ağ emniyetiyle
+  // aynı süre, boyut ve belge-benzerliği koşulları kullanılır.
+  const probe = binaryBodyProbe(body);
+  if (!probe || probe.size < BINARY_BODY_FLOOR_BYTES) return false;
+  const now = Date.now();
+  const covered = [...approved].some((key) => {
+    const approval = parseSizeKey(key);
+    return approval && now - approval.at < APPROVAL_WINDOW_MS && probe.size <= approval.size;
+  });
+  if (!covered) return false;
+  return DOCUMENT_MIME.test(probe.type) || sniffedDocument || sniffsDocument(probe.head) || probe.size >= LARGE_BINARY_BYTES;
+}
+
+let uploadSequence = 0;
+
+function beginApprovedUpload(body, sniffedDocument = false) {
+  if (!approvedUpload(body, sniffedDocument)) return null;
+  const uploadId = `upload_${Date.now()}_${uploadSequence += 1}`;
+  announcePage(PAGE.uploadStarted, { uploadId });
+  return uploadId;
+}
+
+function finishApprovedUpload(uploadId, ok) {
+  if (uploadId) announcePage(PAGE.uploadFinished, { uploadId, ok: Boolean(ok) });
+}
+
+function fetchWithUploadTracking(receiver, input, init, body, sniffedDocument = false) {
+  const uploadId = beginApprovedUpload(body, sniffedDocument);
+  let request;
+  try {
+    request = originalFetch.call(receiver, input, init);
+  } catch (error) {
+    finishApprovedUpload(uploadId, false);
+    throw error;
+  }
+  if (!uploadId) return request;
+  return Promise.resolve(request).then(
+    (response) => {
+      finishApprovedUpload(uploadId, response?.ok !== false);
+      return response;
+    },
+    (error) => {
+      finishApprovedUpload(uploadId, false);
+      throw error;
+    }
+  );
 }
 
 // Türsüz, küçük, adsız Blob eşzamanlı koklanamaz; fetch zaten söz döndürdüğü
@@ -294,12 +352,13 @@ window.fetch = function guardedFetch(input, init) {
   const body = init?.body;
   if (needsAsyncSniff(body)) {
     return body.slice(0, 8).arrayBuffer().then((head) => {
-      const blocked = offender(body, sniffsDocument(new Uint8Array(head)));
+      const sniffedDocument = sniffsDocument(new Uint8Array(head));
+      const blocked = offender(body, sniffedDocument);
       if (blocked) {
         announce(blocked);
         throw new TypeError("Failed to fetch");
       }
-      return originalFetch.call(window, input, init);
+      return fetchWithUploadTracking(window, input, init, body, sniffedDocument);
     });
   }
   // Gövde Request nesnesinin içindeyse eşzamanlı okunamaz; bu yol DOM
@@ -309,7 +368,7 @@ window.fetch = function guardedFetch(input, init) {
     announce(blocked);
     return Promise.reject(new TypeError("Failed to fetch"));
   }
-  return originalFetch.call(this, input, init);
+  return fetchWithUploadTracking(this, input, init, body);
 };
 
 XMLHttpRequest.prototype.send = function guardedSend(body) {
@@ -318,5 +377,14 @@ XMLHttpRequest.prototype.send = function guardedSend(body) {
     announce(blocked);
     throw new DOMException("Redakt Guard: maskelenmemiş dosya gönderilemez.", "NetworkError");
   }
-  return originalSend.call(this, body);
+  const uploadId = beginApprovedUpload(body);
+  const complete = () => finishApprovedUpload(uploadId, this.status >= 200 && this.status < 400);
+  if (uploadId) this.addEventListener("loadend", complete, { once: true });
+  try {
+    return originalSend.call(this, body);
+  } catch (error) {
+    if (uploadId) this.removeEventListener("loadend", complete);
+    finishApprovedUpload(uploadId, false);
+    throw error;
+  }
 };

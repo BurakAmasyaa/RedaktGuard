@@ -15,6 +15,9 @@ const PHASE_LABELS = {
   rules: "Kurumsal kurallar karşılaştırılıyor",
   detecting: "Kişi ve kurum adları aranıyor",
   redacting: "Maskelenmiş kopya hazırlanıyor",
+  delivering: "Güvenli kopya siteye ekleniyor",
+  uploading: "Site güvenli dosyayı işliyor",
+  ready: "Güvenli dosya hazır",
 };
 
 function humanSeconds(milliseconds) {
@@ -129,6 +132,28 @@ export class GuardPanel {
 
     this.onEscape = () => onCancel?.();
     this.progressNodes = { bar, fill, stage, meta, device, phase: null, phaseStartedAt: performance.now() };
+  }
+
+  showDelivery({ filename, total = 1, masked = true }) {
+    this.mount();
+    this.#reset();
+    this.card.append(this.#header(`${this.siteLabel} · güvenli teslim`));
+
+    const scan = element("div", "scan");
+    scan.append(element("div", "file", filename));
+    const stage = element("p", "stage", masked ? "Maskeleme tamamlandı ✓" : "Tarama tamamlandı ✓");
+    scan.append(stage);
+    const bar = element("div", "bar indeterminate");
+    const fill = element("i");
+    bar.append(fill);
+    scan.append(bar);
+    const meta = element("p", "meta", `${this.siteLabel} yükleme alanı hazırlanıyor.`);
+    scan.append(meta);
+    scan.append(element("p", "quiet", "Yalnız güvenli kopya teslim ediliyor; hazır bildirimi gelene kadar bekleyin."));
+    if (total > 1) scan.append(element("p", "quiet", `${total} güvenli dosya`));
+    this.card.append(scan);
+
+    this.progressNodes = { bar, fill, stage, meta, device: null, phase: "delivering", phaseStartedAt: performance.now() };
   }
 
   setProgress({ phase, current, total, detail }) {

@@ -60,6 +60,19 @@ let settingsReady = false;
 // Tek bir bayrak yetmiyor: terk edilmiş bir akışın finally'si, kendisinden
 // sonra başlamış akışın kilidini siliyordu. Jeton sahipliği bunu engeller.
 let activeFlow = null;
+// Maskeleme bitse bile site güvenli dosyayı kabul edip kendi yüklemesini
+// tamamlayana kadar akış bitmiş sayılmaz. Bu bayrak boş prompt + ek dosya
+// gönderimini de durdurur; prompt taraması yalnız metne bakarak bunu göremezdi.
+let deliveryPending = false;
+
+// MAIN-world ağ koruması yalnız PII içermeyen yükleme kimlikleri yayınlar.
+// Başlangıç sırası, önceki bir isteğin sonraki teslimi yanlışlıkla canlı
+// göstermesini engeller.
+const activeSiteUploads = new Map();
+let siteUploadEventSequence = 0;
+let lastSiteUploadStarted = 0;
+let lastSiteUploadActivityAt = 0;
+let lastSiteUploadFailed = 0;
 
 readSettings()
   .then((loaded) => {
@@ -139,8 +152,27 @@ function approve(files) {
 window.addEventListener("message", (event) => {
   if (event.source !== window) return;
   const data = event.data;
-  if (!data || data.__redaktGuard !== GUARD_MARK || data.type !== PAGE.blocked) return;
-  toast(`Redakt Guard durdurdu: ${data.filename || "dosya"} maskelenmeden gönderilemez.`);
+  if (!data || data.__redaktGuard !== GUARD_MARK) return;
+  if (data.type === PAGE.blocked) {
+    toast(`Redakt Guard durdurdu: ${data.filename || "dosya"} maskelenmeden gönderilemez.`);
+    return;
+  }
+  if (data.type === PAGE.uploadStarted && data.uploadId) {
+    siteUploadEventSequence += 1;
+    lastSiteUploadStarted = siteUploadEventSequence;
+    lastSiteUploadActivityAt = performance.now();
+    activeSiteUploads.set(String(data.uploadId), siteUploadEventSequence);
+    return;
+  }
+  if (data.type === PAGE.uploadFinished && data.uploadId) {
+    const startedSequence = activeSiteUploads.get(String(data.uploadId)) || 0;
+    siteUploadEventSequence += 1;
+    lastSiteUploadActivityAt = performance.now();
+    activeSiteUploads.delete(String(data.uploadId));
+    // Önceki teslimden kalmış geç bir hata, yeni teslimi zehirlememeli.
+    // Hata bitiş sırasıyla değil ait olduğu başlangıç sırasıyla işaretlenir.
+    if (data.ok === false) lastSiteUploadFailed = startedSequence;
+  }
 });
 
 function reportActivity(count) {
@@ -385,20 +417,38 @@ async function guardFiles(files, deliver) {
   const sessions = [];
 
   let finished = false;
-  const finish = async (delivered) => {
-    if (finished) return;
+  const finish = async (delivered, { masked = false } = {}) => {
+    if (finished) return false;
     finished = true;
     for (const session of sessions) engine?.release(session.id);
     engine?.close();
-    panel.destroy();
+    let deliveredSuccessfully = false;
     try {
       if (delivered?.length) {
         approve(delivered);
-        await deliver(delivered);
+        deliveryPending = true;
+        const completedLabel = masked ? "Maskeleme tamamlandı ✓" : "Tarama tamamlandı ✓";
+        panel.showDelivery({ filename: delivered[0].name, total: delivered.length, masked });
+        panel.setProgress({
+          phase: "delivering",
+          detail: `${completedLabel} · ${SITE} yükleme alanı güvenli kopyayı kabul ediyor.`,
+        });
+        deliveredSuccessfully = Boolean(await deliver(delivered, (progress) => panel.setProgress({
+          ...progress,
+          detail: `${completedLabel} · ${progress.detail || "Site yanıtı bekleniyor."}`,
+        })));
+        if (deliveredSuccessfully) {
+          panel.setProgress({ phase: "ready", current: 1, total: 1, detail: `${completedLabel} · Dosya artık gönderime hazır.` });
+          await new Promise((resolve) => setTimeout(resolve, 650));
+        }
       }
     } finally {
+      deliveryPending = false;
+      panel.destroy();
       releaseFlow();
     }
+    if (deliveredSuccessfully) announceDelivered(delivered, masked);
+    return deliveredSuccessfully;
   };
 
   const recoverEngine = () => {
@@ -530,10 +580,9 @@ async function guardFiles(files, deliver) {
     }
 
     if (cancelled) return;
-    toast(`${maskedCount} bulgu otomatik maskelendi; güvenli kopya yükleniyor.`);
     // Maskeli kopyanın teslimi rozet/audit gibi yardımcı bildirimlerden önce
     // başlar. Uzantı tam bu anda yeniden yüklense bile güvenli çıktı kaybolmaz.
-    await finish(output);
+    await finish(output, { masked: true });
     reportActivity(maskedCount);
     reportAudit({ artifact: "file", summaries: auditSummaries, formats: auditFormats });
   } catch (error) {
@@ -982,6 +1031,12 @@ function dispatchDrag(target, type, dataTransfer, { clientX = 0, clientY = 0, re
 const nextFrame = () => new Promise((resolve) => requestAnimationFrame(resolve));
 const shortDelay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
+function visibleElements(selector) {
+  return [...new Set(deepQueryAll(selector))].filter(
+    (element) => element instanceof HTMLElement && element.getClientRects().length > 0
+  );
+}
+
 function attachmentUiCount() {
   const selectors = [
     '[data-testid*="attachment" i]',
@@ -991,26 +1046,123 @@ function attachmentUiCount() {
     'img[src^="blob:"]',
     'video[src^="blob:"]',
   ];
-  return new Set(document.querySelectorAll(selectors.join(", "))).size;
+  return visibleElements(selectors.join(", ")).length;
+}
+
+function uploadBusyUiCount() {
+  const selectors = [
+    '[data-testid*="upload-progress" i]',
+    '[data-testid*="attachment" i] [role="progressbar"]',
+    '[class*="attachment" i] [role="progressbar"]',
+    '[class*="upload-preview" i] [role="progressbar"]',
+    '[aria-label*="uploading" i]',
+    '[aria-label*="yükleniyor" i]',
+    '[aria-busy="true"][data-testid*="attachment" i]',
+  ];
+  return visibleElements(selectors.join(", ")).length;
+}
+
+function deliveryUiBaseline() {
+  return { attachments: attachmentUiCount(), busy: uploadBusyUiCount() };
 }
 
 function deliveryVisible(files, baseline) {
   const text = String(document.body?.innerText || "").toLocaleLowerCase("tr-TR");
   const namesVisible = files.every((file) => text.includes(String(file.name || "").toLocaleLowerCase("tr-TR")));
-  return namesVisible || attachmentUiCount() > baseline;
+  return namesVisible || attachmentUiCount() > baseline.attachments;
 }
 
-async function waitForDelivery(files, baseline, timeoutMs = 2200) {
-  const deadline = performance.now() + timeoutMs;
-  do {
-    if (deliveryVisible(files, baseline)) return true;
+const DELIVERY_ACCEPT_TIMEOUT_MS = 4_000;
+const DELIVERY_READY_TIMEOUT_MS = 90_000;
+const DELIVERY_STABLE_MS = 1_200;
+
+function uploadStateAfter(marker) {
+  const active = [...activeSiteUploads.values()].filter((sequence) => sequence > marker).length;
+  return {
+    observed: lastSiteUploadStarted > marker,
+    active,
+    failed: lastSiteUploadFailed > marker,
+  };
+}
+
+// Bir rölenin olayı sayfaya iletmesi, sitenin dosyayı kabul ettiği anlamına
+// gelmez. Ek görünümü veya onaylı güvenli gövdenin ağ isteği görülene kadar
+// bekle; kabul edildikten sonra ise kısa eski zaman aşımıyla ikinci bir kopya
+// yükleme. İlerleme bilinmediği için sahte yüzde yerine geçen süre gösterilir.
+async function waitForDelivery(files, baseline, uploadMarker, reportProgress = () => {}) {
+  const startedAt = performance.now();
+  let stableSince = null;
+  let lastReportedSecond = -1;
+
+  while (performance.now() - startedAt < DELIVERY_READY_TIMEOUT_MS) {
+    const now = performance.now();
+    const elapsed = now - startedAt;
+    const visible = deliveryVisible(files, baseline);
+    const network = uploadStateAfter(uploadMarker);
+    const observed = visible || network.observed;
+    const busy = network.active > 0 || uploadBusyUiCount() > baseline.busy;
+
+    const elapsedSecond = Math.floor(elapsed / 1000);
+    if (elapsedSecond !== lastReportedSecond) {
+      lastReportedSecond = elapsedSecond;
+      reportProgress({
+        phase: observed ? "uploading" : "delivering",
+        detail: observed
+          ? `${SITE} güvenli dosyayı işliyor · ${elapsedSecond} sn`
+          : `${SITE} yükleme alanının yanıtı bekleniyor · ${elapsedSecond} sn`,
+      });
+    }
+
+    if (network.failed && network.active === 0) return { ready: false, observed: true, reason: "network" };
+
+    if (observed && !busy) {
+      if (stableSince === null) stableSince = now;
+      const networkSettled = !network.observed || now - lastSiteUploadActivityAt >= DELIVERY_STABLE_MS;
+      if (now - stableSince >= DELIVERY_STABLE_MS && networkSettled) {
+        return { ready: true, observed: true, reason: "ready" };
+      }
+    } else {
+      stableSince = null;
+    }
+
+    // Bu teslim yöntemi site tarafından hiç görülmediyse sıradaki güvenli
+    // yönteme geçilebilir. Görüldüyse 90 saniyelik üst sınıra kadar beklenir;
+    // aksi halde aynı güvenli kopya iki kez eklenebilir.
+    if (!observed && elapsed >= DELIVERY_ACCEPT_TIMEOUT_MS) {
+      return { ready: false, observed: false, reason: "not-accepted" };
+    }
     await shortDelay(100);
-  } while (performance.now() < deadline);
-  return deliveryVisible(files, baseline);
+  }
+  return { ready: false, observed: true, reason: "timeout" };
 }
 
-function announceDelivered(files) {
-  toast(`${files.length > 1 ? `${files.length} maskelenmiş dosya` : "Maskelenmiş güvenli kopya"} ${SITE} yükleme alanına eklendi.`);
+async function attemptDelivery(action, files, baseline, reportProgress) {
+  const uploadMarker = siteUploadEventSequence;
+  let dispatched = false;
+  try {
+    dispatched = Boolean(await action());
+  } catch {
+    dispatched = false;
+  }
+  if (!dispatched) return { ready: false, observed: false, reason: "dispatch" };
+  return waitForDelivery(files, baseline, uploadMarker, reportProgress);
+}
+
+function announceDelivered(files, masked = true) {
+  const label = files.length > 1
+    ? `${files.length} güvenli dosya`
+    : masked ? "Maskelenmiş güvenli kopya" : "Taranmış güvenli dosya";
+  toast(`${label} ${SITE} yükleme alanına eklendi ve hazır.`);
+}
+
+function deliveryFailure(kind, result) {
+  const reason = result.reason === "network"
+    ? `${SITE} yükleme isteği başarısız oldu`
+    : result.observed
+      ? `${SITE} yüklemeyi 90 saniye içinde tamamlayamadı`
+      : `${SITE} yükleme alanı güvenli kopyayı kabul etmedi`;
+  toast(`${kind} eklenemedi: ${reason}; gönderim durduruldu.`);
+  return false;
 }
 
 function visibleDropOverlays() {
@@ -1077,48 +1229,55 @@ window.addEventListener(
 
     const target = dropTargetOf(event);
     const { clientX, clientY } = event;
-    const deliveryBaseline = attachmentUiCount();
+    const deliveryBaseline = deliveryUiBaseline();
     // Menü/overlay tarama sırasında kapanabilir. Kullanıcının güvenilir drop
     // anında var olan input'u sakla; page-guard ona MAIN-world dinleyici bağladı.
     const firstInput = prefersFileInputDelivery() ? findCompatibleFileInput(files) : null;
 
-    void guardFiles(files, async (delivered) => {
+    void guardFiles(files, async (delivered, reportProgress) => {
       let host = target.isConnected ? target : deliveryFallback(clientX, clientY);
       // Drag ile başlayan akışı önce aynı mekanizmayla, fakat sayfanın MAIN
       // dünyasında tamamla. Bu hem Gemini teslimini hem Claude perdesinin kendi
       // drop durumunu kapatmasını sağlar.
-      if (prefersFileInputDelivery() && replayDropInPage(host, delivered, { clientX, clientY })) {
-        if (await waitForDelivery(delivered, deliveryBaseline)) {
-          announceDelivered(delivered);
-          return;
-        }
-      }
+      let result = await attemptDelivery(
+        () => prefersFileInputDelivery() && replayDropInPage(host, delivered, { clientX, clientY }),
+        delivered,
+        deliveryBaseline,
+        reportProgress
+      );
+      if (result.ready) return true;
+      if (result.observed) return deliveryFailure("Güvenli dosya", result);
+
       // MAIN drag yolu kullanılamadıysa gerçek upload input'u ikinci yedektir.
-      if (prefersFileInputDelivery() && await deliverToFileInput(firstInput, delivered)) {
-        if (await waitForDelivery(delivered, deliveryBaseline)) {
-          announceDelivered(delivered);
-          return;
-        }
-      }
+      result = await attemptDelivery(
+        () => prefersFileInputDelivery() && deliverToFileInput(firstInput, delivered),
+        delivered,
+        deliveryBaseline,
+        reportProgress
+      );
+      if (result.ready) return true;
+      if (result.observed) return deliveryFailure("Güvenli dosya", result);
+
       const transfer = makeTransfer(delivered);
-      // Durumu temizledik; bırakma bölgesi kendi durumunu yeniden kurmadan
-      // gelen drop'u yok sayabilir. dragenter yeni bir overlay de kurabildiği
-      // için bir kare sonra canlı hedef yeniden bulunur.
-      dispatchDrag(host, "dragenter", transfer, { clientX, clientY });
-      await nextFrame();
-      host = deliveryFallback(clientX, clientY);
-      dispatchDrag(host, "dragover", transfer, { clientX, clientY });
-      dispatchDrag(host, "drop", transfer, { clientX, clientY });
-      // Sentetik drop tarayıcının gerçek drag oturumunu sonlandırmaz. ChatGPT
-      // dosyayı kabul etse de tam ekran "Drop any file" perdesi açık kalır;
-      // sonraki karede açık bir terminal leave ile bu ikinci döngüyü kapat.
-      await nextFrame();
-      host = deliveryFallback(clientX, clientY);
-      dispatchDrag(host, "dragleave", transfer, { clientX: -1, clientY: -1 });
-      if (prefersFileInputDelivery()) {
-        if (await waitForDelivery(delivered, deliveryBaseline)) announceDelivered(delivered);
-        else toast(`Maskelenmiş dosya ${SITE} yükleme alanı tarafından kabul edilmedi; gönderim durduruldu.`);
-      }
+      result = await attemptDelivery(async () => {
+        // Durumu temizledik; bırakma bölgesi kendi durumunu yeniden kurmadan
+        // gelen drop'u yok sayabilir. dragenter yeni bir overlay de kurabildiği
+        // için bir kare sonra canlı hedef yeniden bulunur.
+        dispatchDrag(host, "dragenter", transfer, { clientX, clientY });
+        await nextFrame();
+        host = deliveryFallback(clientX, clientY);
+        dispatchDrag(host, "dragover", transfer, { clientX, clientY });
+        dispatchDrag(host, "drop", transfer, { clientX, clientY });
+        // Sentetik drop tarayıcının gerçek drag oturumunu sonlandırmaz. ChatGPT
+        // dosyayı kabul etse de tam ekran "Drop any file" perdesi açık kalır;
+        // sonraki karede açık bir terminal leave ile bu ikinci döngüyü kapat.
+        await nextFrame();
+        host = deliveryFallback(clientX, clientY);
+        dispatchDrag(host, "dragleave", transfer, { clientX: -1, clientY: -1 });
+        return true;
+      }, delivered, deliveryBaseline, reportProgress);
+      if (result.ready) return true;
+      return deliveryFailure("Güvenli dosya", result);
     }).finally(() => cleanupDropUi(target, clientX, clientY).catch(() => {}));
   },
   true
@@ -1143,16 +1302,19 @@ function interceptFileInput(event) {
   // Özgün dosyalar girdide bırakılmaz: sayfa bir başka yolla okumaya kalkarsa
   // elinde yalnızca boş bir liste bulmalı.
   input.value = "";
-  const deliveryBaseline = attachmentUiCount();
+  const deliveryBaseline = deliveryUiBaseline();
 
-  void guardFiles(files, async (delivered) => {
+  void guardFiles(files, async (delivered, reportProgress) => {
     // Önce kullanıcının seçtiği input denenir: doğrudan MAIN-world dinleyicisi
     // DOM'dan ayrılmış olsa bile üzerinde kalır. Sonra güncel eşdeğeri aranır.
-    if (!await deliverToFileInput(input, delivered) || !(await waitForDelivery(delivered, deliveryBaseline))) {
-      toast(`Yükleme alanı değişti; maskelenmiş dosya ${SITE} sitesine eklenemedi.`);
-    } else {
-      announceDelivered(delivered);
-    }
+    const result = await attemptDelivery(
+      () => deliverToFileInput(input, delivered),
+      delivered,
+      deliveryBaseline,
+      reportProgress
+    );
+    if (result.ready) return true;
+    return deliveryFailure("Güvenli dosya", result);
   });
 }
 
@@ -1187,22 +1349,28 @@ window.addEventListener(
 
     const target = event.target?.isConnected ? event.target : document.activeElement || document.body;
     const firstInput = prefersFileInputDelivery() ? findCompatibleFileInput(files) : null;
-    const deliveryBaseline = attachmentUiCount();
-    void guardFiles(files, async (delivered) => {
+    const deliveryBaseline = deliveryUiBaseline();
+    void guardFiles(files, async (delivered, reportProgress) => {
       // Görsel yapıştırma da dosya yükleme hattıdır. Gemini/Claude sentetik
       // ClipboardEvent'i yok sayarsa gerçek upload input'u üzerinden teslim et.
-      if (prefersFileInputDelivery() && await deliverToFileInput(firstInput, delivered)) {
-        if (await waitForDelivery(delivered, deliveryBaseline)) {
-          announceDelivered(delivered);
-          return;
-        }
-      }
-      if (prefersFileInputDelivery() && replayDropInPage(target, delivered)) {
-        if (await waitForDelivery(delivered, deliveryBaseline)) {
-          announceDelivered(delivered);
-          return;
-        }
-      }
+      let result = await attemptDelivery(
+        () => prefersFileInputDelivery() && deliverToFileInput(firstInput, delivered),
+        delivered,
+        deliveryBaseline,
+        reportProgress
+      );
+      if (result.ready) return true;
+      if (result.observed) return deliveryFailure("Güvenli görsel", result);
+
+      result = await attemptDelivery(
+        () => prefersFileInputDelivery() && replayDropInPage(target, delivered),
+        delivered,
+        deliveryBaseline,
+        reportProgress
+      );
+      if (result.ready) return true;
+      if (result.observed) return deliveryFailure("Güvenli görsel", result);
+
       const transfer = makeTransfer(delivered);
       let replay = null;
       try {
@@ -1216,13 +1384,13 @@ window.addEventListener(
         replay = null;
       }
       if (replay && replay.clipboardData === transfer) {
-        synthetic.add(replay);
-        target.dispatchEvent(replay);
-        if (!prefersFileInputDelivery()) return;
-        if (await waitForDelivery(delivered, deliveryBaseline)) {
-          announceDelivered(delivered);
-          return;
-        }
+        result = await attemptDelivery(() => {
+          synthetic.add(replay);
+          target.dispatchEvent(replay);
+          return true;
+        }, delivered, deliveryBaseline, reportProgress);
+        if (result.ready) return true;
+        if (result.observed) return deliveryFailure("Güvenli görsel", result);
       }
       // ClipboardEvent taşınamadıysa dosya, aynı hedefe bırakma olayı olarak verilir.
       const fallback = new DragEvent("drop", {
@@ -1231,12 +1399,13 @@ window.addEventListener(
         composed: true,
         dataTransfer: transfer,
       });
-      synthetic.add(fallback);
-      target.dispatchEvent(fallback);
-      if (prefersFileInputDelivery()) {
-        if (await waitForDelivery(delivered, deliveryBaseline)) announceDelivered(delivered);
-        else toast(`Maskelenmiş görsel ${SITE} yükleme alanı tarafından kabul edilmedi; gönderim durduruldu.`);
-      }
+      result = await attemptDelivery(() => {
+        synthetic.add(fallback);
+        target.dispatchEvent(fallback);
+        return true;
+      }, delivered, deliveryBaseline, reportProgress);
+      if (result.ready) return true;
+      return deliveryFailure("Güvenli görsel", result);
     });
   },
   true
@@ -1245,6 +1414,14 @@ window.addEventListener(
 // Gönderim: Enter tuşu ve gönder düğmesi. Dinleyiciler modül düzeyinde,
 // document_start'ta kaydedilir — ayar okumasının içine alınırsa okuma hata
 // verdiğinde koruma hiç kurulmaz ve gönderim sessizce serbest kalır.
+function stopSendWhileDelivering(event) {
+  if (!deliveryPending) return false;
+  event.preventDefault();
+  event.stopImmediatePropagation();
+  toast("Güvenli dosya hâlâ siteye yükleniyor; hazır bildirimi gelene kadar bekleyin.");
+  return true;
+}
+
 window.addEventListener(
   "keydown",
   (event) => {
@@ -1255,6 +1432,7 @@ window.addEventListener(
 
     const composer = findComposer(event.composedPath?.()[0] || event.target);
     if (!composer) return;
+    if (stopSendWhileDelivering(event)) return;
     const text = readComposerText(composer);
     const decision = promptDecision(text);
     if (!decision) return;
@@ -1269,10 +1447,11 @@ window.addEventListener(
 window.addEventListener(
   "click",
   (event) => {
-    if (!promptGuardActive()) return;
     const path = event.composedPath?.() || [event.target];
     const button = isSendControl(path);
     if (!button) return;
+    if (stopSendWhileDelivering(event)) return;
+    if (!promptGuardActive()) return;
 
     const composer = composerForSend(button);
     if (!composer) return;

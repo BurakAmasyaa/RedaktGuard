@@ -157,7 +157,7 @@ test("yardımcı bildirimler maskeli dosya ve prompt teslimini geciktiremez", as
   const fileStart = code.indexOf("// Maskeli kopyanın teslimi");
   const fileEnd = code.indexOf("  } catch (error) {", fileStart);
   const fileSuccess = code.slice(fileStart, fileEnd);
-  const finishAt = fileSuccess.indexOf("finish(output)");
+  const finishAt = fileSuccess.indexOf("finish(output, { masked: true })");
   const fileActivityAt = fileSuccess.indexOf("reportActivity(maskedCount)");
   const fileAuditAt = fileSuccess.indexOf("reportAudit(");
   assert.ok(
@@ -316,7 +316,7 @@ test("onay, maskelenmiş dosya sayfaya verilmeden önce yazılır", async () => 
   // Gövdenin sonu: girintili kapanış. Dosyanın başka yerindeki bloklara kaymaz.
   const finish = code.slice(start, code.indexOf("\n  };", start));
   assert.ok(finish.includes("approve(delivered)"), "onay yazılmıyor");
-  assert.ok(finish.indexOf("approve(delivered)") < finish.indexOf("deliver(delivered)"), "onay geç yazılıyor");
+  assert.ok(finish.indexOf("approve(delivered)") < finish.indexOf("await deliver(delivered"), "onay geç yazılıyor");
 });
 
 test("sayfa dünyasındaki betik yalnızca ad ve boyutla, eşzamanlı karar verir", async () => {
@@ -335,7 +335,7 @@ test("taranabilir türler ile sayfa dünyasının kararı aynı listeden gelir",
   assert.ok(!isScannable("arsiv.zip"));
   assert.deepEqual([...SCANNABLE_EXTENSIONS], ["docx", "xlsx", "pdf", "txt", "jpg", "jpeg", "png"]);
   assert.equal(fileKey("a b.docx", 12), "a b.docx|12");
-  assert.deepEqual(Object.values(PAGE), ["blocked"]);
+  assert.deepEqual(Object.values(PAGE), ["blocked", "upload-started", "upload-finished"]);
   assert.equal(CONFIG_ATTRIBUTE, "data-redakt-guard");
   assert.equal(APPROVED_ATTRIBUTE, "data-redakt-guard-approved");
 });
@@ -405,7 +405,7 @@ test("onay kanalı dosya adındaki satır sonundan etkilenmez", () => {
 test("sürükleme perdesi başarı, iptal ve hata sonunda kesin olarak kapatılır", async () => {
   const code = await source("guard/src/content/interceptor.js");
   assert.match(code, /function cleanupDropUi\(/u);
-  assert.match(code, /guardFiles\(files,[\s\S]{0,2600}\.finally\(\(\) => cleanupDropUi/u,
+  assert.match(code, /guardFiles\(files,[\s\S]{0,5200}\.finally\(\(\) => cleanupDropUi/u,
     "iptal/hata yolu terminal sürükleme temizliğine bağlanmıyor");
   const cleanup = code.slice(code.indexOf("async function cleanupDropUi"), code.indexOf('window.addEventListener(\n  "drop"'));
   assert.match(cleanup, /dispatchDrag\(overlay, "drop", empty/u, "görünen perdeye boş terminal drop gönderilmiyor");
@@ -414,7 +414,7 @@ test("sürükleme perdesi başarı, iptal ve hata sonunda kesin olarak kapatıl�
   assert.match(cleanup, /dispatchDrag\(target, "dragend"/u);
   assert.match(cleanup, /key: "Escape"/u);
 
-  const delivery = code.slice(code.indexOf("guardFiles(files, async (delivered)"), code.indexOf("  },\n  true\n);"));
+  const delivery = code.slice(code.indexOf("guardFiles(files, async (delivered, reportProgress)"), code.indexOf("  },\n  true\n);"));
   const enterAt = delivery.indexOf('dispatchDrag(host, "dragenter"');
   const firstFrameAt = delivery.indexOf("await nextFrame()", enterAt);
   const retargetAt = delivery.indexOf("host = deliveryFallback", firstFrameAt);
@@ -448,7 +448,7 @@ test("Gemini ve Claude güvenli kopyayı MAIN-world dosya girdisine teslim eder"
     "iptal sonrası site drop perdesi MAIN dünyasında kapatılmıyor");
 
   const dropFlow = code.slice(
-    code.indexOf("guardFiles(files, async (delivered)"),
+    code.indexOf("guardFiles(files, async (delivered, reportProgress)"),
     code.indexOf("function interceptFileInput")
   );
   const mainDropAt = dropFlow.indexOf("replayDropInPage(host, delivered");
@@ -470,6 +470,67 @@ test("Guard bildirimi okunacak kadar kalır ve kullanıcı tarafından kapatıla
   assert.match(panel, /const persistent = \/hata\|durdur/u,
     "hata ve engelleme bildirimleri kalıcı değil");
   assert.doesNotMatch(panel, /\}, 3200\)/u, "eski 3,2 saniyelik süre geri geldi");
+});
+
+test("maskeleme sonrası site teslimi ayrı panelde, geçen süreyle izlenir", async () => {
+  const panel = await source("guard/src/content/panel.js");
+  const code = await source("guard/src/content/interceptor.js");
+  assert.match(panel, /showDelivery\(\{ filename, total = 1, masked = true \}\)/u);
+  assert.match(panel, /delivering: "Güvenli kopya siteye ekleniyor"/u);
+  assert.match(panel, /uploading: "Site güvenli dosyayı işliyor"/u);
+  assert.match(panel, /ready: "Güvenli dosya hazır"/u);
+
+  const finish = code.slice(code.indexOf("const finish = async ("), code.indexOf("  const recoverEngine", code.indexOf("const finish = async (")));
+  const deliveryPanelAt = finish.indexOf("panel.showDelivery(");
+  const deliverAt = finish.indexOf("await deliver(delivered");
+  const readyAt = finish.indexOf('phase: "ready"');
+  const destroyAt = finish.indexOf("panel.destroy()");
+  assert.ok(
+    deliveryPanelAt >= 0 && deliveryPanelAt < deliverAt && deliverAt < readyAt && readyAt < destroyAt,
+    "teslim paneli site hazır olmadan kapanıyor"
+  );
+
+  assert.match(code, /const DELIVERY_ACCEPT_TIMEOUT_MS = 4_000/u);
+  assert.match(code, /const DELIVERY_READY_TIMEOUT_MS = 90_000/u);
+  assert.match(code, /\$\{elapsedSecond\} sn/u, "teslimde geçen süre gösterilmiyor");
+  assert.match(code, /phase: observed \? "uploading" : "delivering"/u);
+});
+
+test("site güvenli yüklemeyi gördüyse ikinci teslim denenmez", async () => {
+  const code = await source("guard/src/content/interceptor.js");
+  assert.match(code, /function uploadStateAfter\(marker\)/u);
+  assert.match(code, /network\.active > 0 \|\| uploadBusyUiCount\(\) > baseline\.busy/u);
+  assert.match(code, /if \(network\.failed && network\.active === 0\)/u);
+  assert.match(code, /lastSiteUploadFailed = startedSequence/u, "eski teslimin geç hatası yeni teslimi bozabilir");
+  assert.ok(
+    (code.match(/if \(result\.observed\) return deliveryFailure/gu) || []).length >= 3,
+    "kabul edilmiş dosyada yedek yollar yineleniyor"
+  );
+
+  const pageGuard = await source("guard/src/content/page-guard.js");
+  assert.match(pageGuard, /announcePage\(PAGE\.uploadStarted, \{ uploadId \}\)/u);
+  assert.match(pageGuard, /announcePage\(PAGE\.uploadFinished, \{ uploadId, ok: Boolean\(ok\) \}\)/u);
+  assert.match(pageGuard, /response\?\.ok !== false/u, "fetch hata durumu başarı sayılıyor");
+  assert.match(pageGuard, /this\.status >= 200 && this\.status < 400/u, "XHR hata durumu başarı sayılıyor");
+});
+
+test("güvenli dosya siteye yüklenirken boş prompt bile gönderilemez", async () => {
+  const code = await source("guard/src/content/interceptor.js");
+  const blocker = code.slice(code.indexOf("function stopSendWhileDelivering("), code.indexOf('window.addEventListener(\n  "keydown"'));
+  assert.match(blocker, /if \(!deliveryPending\) return false/u);
+  assert.match(blocker, /event\.preventDefault\(\)/u);
+  assert.match(blocker, /event\.stopImmediatePropagation\(\)/u);
+
+  const keydown = code.slice(code.indexOf('window.addEventListener(\n  "keydown"'), code.indexOf('window.addEventListener(\n  "click"'));
+  assert.ok(
+    keydown.indexOf("stopSendWhileDelivering(event)") < keydown.indexOf("promptDecision(text)"),
+    "Enter engeli prompt kararından sonra çalışıyor"
+  );
+  const click = code.slice(code.indexOf('window.addEventListener(\n  "click"'));
+  assert.ok(
+    click.indexOf("stopSendWhileDelivering(event)") < click.indexOf("promptGuardActive()"),
+    "gönder düğmesi engeli prompt ayarına bağlı"
+  );
 });
 
 test("akış kilidi sahiplik jetonuyla bırakılır", async () => {
@@ -840,15 +901,13 @@ test("teslim her sitede katmanlı ve doğrulanır; site-özel kapı yok", async 
   assert.match(code, /const prefersFileInputDelivery = \(\) => true;/u, "teslim yine site-özel kapıya alınmış");
   assert.doesNotMatch(code, /prefersFileInputDelivery = \(\) => SITE_ID ===/u);
 
-  // Drop yolu: `void guardFiles(` üç kez, `cleanupDropUi(` iki kez geçtiği için
-  // dilim, yalnız drop yolunda geçen uyarı metnine kadar alınır.
-  const dropEnd = code.indexOf("Maskelenmiş dosya ${SITE} yükleme alanı tarafından kabul edilmedi");
-  assert.ok(dropEnd > 0, "drop yolunun başarısızlık uyarısı yok — sessiz kayıp geri geldi");
-  const dropStart = code.lastIndexOf("const firstInput = prefersFileInputDelivery()", dropEnd);
+  const dropStart = code.indexOf("guardFiles(files, async (delivered, reportProgress)");
+  const dropEnd = code.indexOf("function interceptFileInput", dropStart);
   const drop = code.slice(dropStart, dropEnd);
   // Girdi teslimi denenmeli ve sonuç beklenmeli; başarısızsa kullanıcı duymalı.
   assert.match(drop, /deliverToFileInput\(firstInput, delivered\)/u, "drop yolunda girdi teslimi yok");
-  assert.match(drop, /await waitForDelivery\(delivered, deliveryBaseline\)/u, "teslim doğrulanmıyor");
+  assert.match(drop, /await attemptDelivery\(/u, "teslim doğrulanmıyor");
+  assert.match(drop, /deliveryFailure\("Güvenli dosya", result\)/u, "sessiz kayıp geri geldi");
 });
 
 // gemini.google.com'da canlı ölçüldü: dosya girdisi yalnız "Yükleme ve araçlar"
@@ -865,11 +924,13 @@ test("teslim anında dosya girdisi yoksa yükleme menüsü açılıp taze girdi 
   // Bağlı aday yoksa kurdurma denenmeli.
   assert.match(code, /if \(!candidates\.some\(\(input\) => input\.isConnected\)\)/u);
   assert.match(code, /await materializeUploadInput\(files\)/u);
-  // Üç çağrı yeri de artık beklemeli; beklenmeyen çağrı her zaman "truthy" Promise döner
-  // ve teslim başarılı sanılır.
+  // Çağrı yerleri attemptDelivery içine alınmalı; bu yardımcı hem asenkron
+  // eylemi hem de sitenin gerçek kabul/işleme sonucunu bekler.
   const calls = code.match(/deliverToFileInput\((firstInput|input), delivered\)/gu) || [];
   assert.ok(calls.length >= 3, `çağrı yeri sayısı beklenmedik: ${calls.length}`);
-  assert.doesNotMatch(code, /(?<!await )deliverToFileInput\((firstInput|input), delivered\)/u, "beklenmeyen deliverToFileInput çağrısı var");
+  const attempt = code.slice(code.indexOf("async function attemptDelivery("), code.indexOf("function announceDelivered("));
+  assert.match(attempt, /dispatched = Boolean\(await action\(\)\)/u, "teslim eylemi beklenmiyor");
+  assert.match(attempt, /return waitForDelivery\(files, baseline, uploadMarker, reportProgress\)/u, "site kabulü beklenmiyor");
 });
 
 // Uzantı yüklenmeden açık kalan sekmeye içerik betiği girmez: panel yok, uyarı

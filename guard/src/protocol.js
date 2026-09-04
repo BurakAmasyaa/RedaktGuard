@@ -80,8 +80,15 @@ export const CMD = Object.freeze({
   release: "release",
 });
 
-// Sayfa dünyasından geri gelen tek mesaj: bir yükleme durduruldu.
-export const PAGE = Object.freeze({ blocked: "blocked" });
+// Sayfa dünyasından geri gelen mesajlar. Yükleme olaylarında dosya adı, içerik
+// veya URL taşınmaz; yalnız güvenli kopyaya ait ağ işinin başlayıp bittiği
+// bildirilir. Bu bilgi kullanıcıya dürüst bir "site hâlâ yüklüyor" durumu
+// göstermek için kullanılır, güvenlik kararı için kullanılmaz.
+export const PAGE = Object.freeze({
+  blocked: "blocked",
+  uploadStarted: "upload-started",
+  uploadFinished: "upload-finished",
+});
 
 // Motorun açabildiği türler. Bu listenin dışı taranamaz; taranamayan
 // dosyaya ne yapılacağı ayarlardaki blockUnscannable ile belirlenir.
