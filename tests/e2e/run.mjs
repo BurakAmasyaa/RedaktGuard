@@ -303,18 +303,27 @@ async function readOutcome(client, sessionId, site, fixture) {
   return { site, format: fixture.id, name: received.name, bytes: received.size, masked: true };
 }
 
+async function extensionMessage(client, target, type) {
+  const context = await waitUntil(
+    () => target.executionContexts.find((item) => item.auxData?.type === "isolated" && !item.auxData?.isDefault),
+    { timeout: 15_000, message: "Redakt Guard yalıtılmış içerik bağlamı bulunamadı." }
+  );
+  return evaluate(
+    client,
+    target.sessionId,
+    `(async () => chrome.runtime.sendMessage({ type: ${JSON.stringify(type)} }))()`,
+    context.id
+  );
+}
+
 async function verifyDiagnosticReport(client, expectedOperations) {
   // Aynı mesajı kullanıcı Ayarlar sayfasındaki düğme de gönderir. CDP ile
   // chrome-extension:// sayfası açmak bazı Chromium sürümlerinde engellenir;
   // içerik betiğinin gerçek ISOLATED bağlamı aynı yetkili runtime kanalını sınar.
   const target = await fixtureTarget(client, sites[0]);
   try {
-    const context = await waitUntil(
-      () => target.executionContexts.find((item) => item.auxData?.type === "isolated" && !item.auxData?.isDefault),
-      { timeout: 15_000, message: "Redakt Guard yalıtılmış içerik bağlamı bulunamadı." }
-    );
     const response = await waitUntil(async () => {
-      const value = await evaluate(client, target.sessionId, `(async () => chrome.runtime.sendMessage({ type: ${JSON.stringify(MSG.readDiagnostics)} }))()`, context.id);
+      const value = await extensionMessage(client, target, MSG.readDiagnostics);
       return value?.ok && value.report?.recentOperations?.length >= expectedOperations ? value : null;
     }, { timeout: 15_000, message: "Tanılama raporu tamamlanan işlemleri içermedi." });
     const report = response.report;
@@ -342,8 +351,15 @@ async function runBrowser(kind, binary, fixtures) {
       for (const fixture of fixtures) {
         const target = await fixtureTarget(browser.client, site);
         try {
+          process.stdout.write(`[${kind}] ${site.id}/${fixture.id} · taranıyor\n`);
           await triggerFile(browser.client, target.sessionId, fixture);
-          results.push(await readOutcome(browser.client, target.sessionId, site.id, fixture));
+          try {
+            results.push(await readOutcome(browser.client, target.sessionId, site.id, fixture));
+          } catch (error) {
+            const diagnostics = await extensionMessage(browser.client, target, MSG.readDiagnostics).catch(() => null);
+            if (diagnostics?.report) process.stderr.write(`PII-siz tanılama: ${JSON.stringify(diagnostics.report)}\n`);
+            throw error;
+          }
         } finally {
           target.remove();
           await browser.client.send("Target.closeTarget", { targetId: target.targetId }).catch(() => {});

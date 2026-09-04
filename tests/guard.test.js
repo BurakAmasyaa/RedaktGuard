@@ -217,6 +217,7 @@ test("Chrome ve Edge E2E paketi gerçek site originlerinde izole fixture çalı�
   assert.match(fixture, /input\.addEventListener\("change"/u);
   assert.match(workflow, /browser: \[chrome, edge\]/u);
   assert.match(workflow, /last-known-good-versions-with-downloads\.json/u, "CI Chrome for Testing kurmuyor");
+  assert.match(workflow, /--timeout=600000/u, "Windows ilk model ısınması için E2E zaman aşımı kısa");
   assert.match(runner, /GUARD_E2E_CHROME_BINARY/u, "yerel Chrome for Testing yolu seçilemiyor");
   assert.match(runner, /verifyDiagnosticReport/u, "tarayıcı testi tanılama entegrasyonunu doğrulamıyor");
   assert.match(workflow, /tags:\s*\n\s*- "v\*"/u);

@@ -284,6 +284,8 @@ uzantı yüklemeyi kısıtladığı için otomasyon Chrome for Testing/Chromium 
 Windows CI kararlı Chrome for Testing sürümünü Google'ın resmi manifestinden indirir;
 Edge işi cihazdaki Edge kurulumunu kullanır. Bu ayrım son kullanıcı desteğini değiştirmez:
 üretilen Manifest V3 paketi hem Chrome hem Edge'e normal kurulumla yüklenebilir.
+Windows koşucusunda ilk yerel model ısınması daha yavaş olabildiğinden senaryo üst
+sınırı 10 dakikadır; her dosya türünün başlangıcı iş günlüğünde ayrı görünür.
 
 `.github/workflows/guard-browser-e2e.yml`, `v*` sürüm etiketi pushlandığında Windows'ta
 Chrome ve Edge işlerini ayrı ayrı çalıştırır. Bu deterministik paket site adaptörünün

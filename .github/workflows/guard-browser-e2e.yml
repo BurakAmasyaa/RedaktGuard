@@ -37,4 +37,4 @@ jobs:
           if (-not $binary) { throw 'Chrome for Testing çalıştırılabilir dosyası bulunamadı.' }
           "GUARD_E2E_CHROME_BINARY=$binary" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
       - name: ${{ matrix.browser }} sentetik site E2E
-        run: npm run test:e2e -- --browser=${{ matrix.browser }} --headless
+        run: npm run test:e2e -- --browser=${{ matrix.browser }} --headless --timeout=600000
