@@ -47,6 +47,8 @@ export const MSG = Object.freeze({
   ensureEngine: "guard/ensure-engine",
   restartEngine: "guard/restart-engine",
   readTrace: "guard/read-trace",
+  readDiagnostics: "guard/read-diagnostics",
+  diagnosticOperation: "guard/diagnostic-operation",
   mark: "guard/mark",
   readSettings: "guard/read-settings",
   writeSettings: "guard/write-settings",

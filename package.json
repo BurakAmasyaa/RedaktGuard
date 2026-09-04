@@ -1,11 +1,12 @@
 {
   "name": "redakt-guard",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "private": true,
   "type": "module",
   "scripts": {
     "build": "node guard/build.mjs",
-    "test": "node --test tests/*.test.js"
+    "test": "node --test tests/*.test.js",
+    "test:e2e": "node tests/e2e/run.mjs"
   },
   "dependencies": {
     "@huggingface/transformers": "^3.8.1",

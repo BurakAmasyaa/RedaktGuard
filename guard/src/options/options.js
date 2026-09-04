@@ -145,6 +145,36 @@ async function loadTrace() {
 
 el("refreshTrace").addEventListener("click", () => loadTrace());
 
+el("downloadDiagnostics").addEventListener("click", async () => {
+  const button = el("downloadDiagnostics");
+  const status = el("diagnosticsStatus");
+  button.disabled = true;
+  status.hidden = false;
+  status.className = "status";
+  status.textContent = "PII içermeyen tanılama raporu hazırlanıyor…";
+  try {
+    const response = await chrome.runtime.sendMessage({ type: MSG.readDiagnostics });
+    if (!response?.ok || !response.report) throw new Error(response?.message || "Rapor oluşturulamadı.");
+    const blob = new Blob([`${JSON.stringify(response.report, null, 2)}\n`], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    const stamp = new Date().toISOString().replace(/[:.]/gu, "-");
+    link.href = url;
+    link.download = `redakt-guard-diagnostics-${stamp}.json`;
+    document.body.append(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    status.className = "status ok";
+    status.textContent = "Tanılama raporu indirildi. Dosya adı, içerik, prompt ve gerçek bulgu değerleri rapora dahil edilmedi.";
+  } catch (error) {
+    status.className = "status bad";
+    status.textContent = `Tanılama raporu oluşturulamadı: ${error?.message || error}`;
+  } finally {
+    button.disabled = false;
+  }
+});
+
 // Gerçek yolu baştan sona koşturur: motoru kurdurur, portu açar, küçük bir
 // belge gönderir ve yanıtı bekler. İçerik betiğiyle aynı yoldan geçer.
 el("selftest").addEventListener("click", async () => {

@@ -192,6 +192,48 @@ function reportAudit(details) {
   }
 }
 
+function newDiagnosticOperation({ artifact, files = [] }) {
+  return {
+    schema: 1,
+    operationId: crypto.randomUUID(),
+    startedAt: new Date().toISOString(),
+    clock: performance.now(),
+    artifact,
+    fileCount: files.length,
+    formats: [...new Set(files.map((file) => extensionOf(file.name)).filter(Boolean))],
+    findingCount: 0,
+    durations: { scanMs: 0, maskMs: 0, deliveryMs: 0 },
+    deliveryMethod: "none",
+    lastStage: "start",
+    sent: false,
+  };
+}
+
+function finishDiagnosticOperation(operation, outcome, errorCode = null) {
+  if (!operation || operation.sent) return;
+  operation.sent = true;
+  sendRuntimeMessageBestEffort({
+    type: MSG.diagnosticOperation,
+    event: {
+      schema: operation.schema,
+      operationId: operation.operationId,
+      startedAt: operation.startedAt,
+      finishedAt: new Date().toISOString(),
+      site: SITE_ID,
+      artifact: operation.artifact,
+      outcome,
+      fileCount: operation.fileCount,
+      formats: operation.formats,
+      findingCount: operation.findingCount,
+      durations: { ...operation.durations, totalMs: performance.now() - operation.clock },
+      device: engineDevice || "unknown",
+      deliveryMethod: operation.deliveryMethod || "none",
+      lastStage: operation.lastStage,
+      errorCode,
+    },
+  });
+}
+
 function blockingReason(items, fallback) {
   const titles = [];
   for (const item of Array.isArray(items) ? items : []) {
@@ -400,8 +442,14 @@ function classify(file) {
 }
 
 async function guardFiles(files, deliver) {
+  const imageFormats = new Set(["jpg", "jpeg", "png"]);
+  const operation = newDiagnosticOperation({
+    artifact: files.every((file) => imageFormats.has(extensionOf(file.name))) ? "image" : "file",
+    files,
+  });
   if (activeFlow) {
     toast("Redakt Guard önceki dosyayı işliyor; bitince tekrar dene.");
+    finishDiagnosticOperation(operation, "blocked", "concurrent-operation");
     return;
   }
   const flow = Symbol("guard-flow");
@@ -417,7 +465,7 @@ async function guardFiles(files, deliver) {
   const sessions = [];
 
   let finished = false;
-  const finish = async (delivered, { masked = false } = {}) => {
+  const finish = async (delivered, { masked = false, outcome = null, errorCode = null } = {}) => {
     if (finished) return false;
     finished = true;
     for (const session of sessions) engine?.release(session.id);
@@ -427,17 +475,24 @@ async function guardFiles(files, deliver) {
       if (delivered?.length) {
         approve(delivered);
         deliveryPending = true;
+        operation.lastStage = "delivery";
+        const deliveryStartedAt = performance.now();
         const completedLabel = masked ? "Maskeleme tamamlandı ✓" : "Tarama tamamlandı ✓";
         panel.showDelivery({ filename: delivered[0].name, total: delivered.length, masked });
         panel.setProgress({
           phase: "delivering",
           detail: `${completedLabel} · ${SITE} yükleme alanı güvenli kopyayı kabul ediyor.`,
         });
-        deliveredSuccessfully = Boolean(await deliver(delivered, (progress) => panel.setProgress({
-          ...progress,
-          detail: `${completedLabel} · ${progress.detail || "Site yanıtı bekleniyor."}`,
-        })));
+        try {
+          deliveredSuccessfully = Boolean(await deliver(delivered, (progress) => panel.setProgress({
+            ...progress,
+            detail: `${completedLabel} · ${progress.detail || "Site yanıtı bekleniyor."}`,
+          }), operation));
+        } finally {
+          operation.durations.deliveryMs = performance.now() - deliveryStartedAt;
+        }
         if (deliveredSuccessfully) {
+          operation.lastStage = "ready";
           panel.setProgress({ phase: "ready", current: 1, total: 1, detail: `${completedLabel} · Dosya artık gönderime hazır.` });
           await new Promise((resolve) => setTimeout(resolve, 650));
         }
@@ -446,6 +501,11 @@ async function guardFiles(files, deliver) {
       deliveryPending = false;
       panel.destroy();
       releaseFlow();
+      finishDiagnosticOperation(
+        operation,
+        deliveredSuccessfully ? "success" : outcome || (delivered?.length ? "failed" : "blocked"),
+        deliveredSuccessfully ? null : errorCode || operation.errorCode || (delivered?.length ? "delivery-failed" : "policy-blocked")
+      );
     }
     if (deliveredSuccessfully) announceDelivered(delivered, masked);
     return deliveredSuccessfully;
@@ -457,6 +517,8 @@ async function guardFiles(files, deliver) {
     engine?.stopWatching();
     engine?.close();
     panel.destroy();
+    operation.lastStage = "error";
+    finishDiagnosticOperation(operation, "failed", "engine-timeout");
     toast("Tarama motoru yanıt vermedi; yeniden kuruluyor.");
     Promise.resolve()
       .then(() => sendRuntimeMessage({ type: MSG.restartEngine }))
@@ -476,7 +538,7 @@ async function guardFiles(files, deliver) {
       total: files.length,
       onCancel: () => {
         cancelled = true;
-        void finish(null);
+        void finish(null, { outcome: "cancelled", errorCode: "user-cancelled" });
       },
     });
 
@@ -484,6 +546,8 @@ async function guardFiles(files, deliver) {
     // hazırlanması) saniyeler sürebiliyor. Burada susmak, kullanıcıya
     // "takıldı" hissi veren tek en büyük boşluktu.
     panel.setProgress({ phase: "connecting", detail: "İlk kullanımda model hazırlanır, bu biraz sürebilir." });
+    operation.lastStage = "engine";
+    const scanStartedAt = performance.now();
     const opened = await EnginePort.open();
     if (cancelled) {
       opened.close();
@@ -502,7 +566,7 @@ async function guardFiles(files, deliver) {
         total: files.length,
         onCancel: () => {
           cancelled = true;
-          void finish(null);
+          void finish(null, { outcome: "cancelled", errorCode: "user-cancelled" });
         },
       });
 
@@ -512,7 +576,8 @@ async function guardFiles(files, deliver) {
             ? "Dosya 50 MB sınırını aşıyor; Redakt bu boyutu tarayamıyor."
             : "Redakt bu dosya türünü açamıyor; içeriği taranamadı.";
         toast(`${message} Kurum politikası gönderimi durdurdu.`);
-        return finish(null);
+        operation.lastStage = "scan";
+        return finish(null, { outcome: "blocked", errorCode: kind === "toolarge" ? "file-too-large" : "unsupported-file" });
       }
 
       const id = nextId();
@@ -526,19 +591,22 @@ async function guardFiles(files, deliver) {
       } catch (error) {
         if (cancelled || recovering) return;
         toast(`Dosya güvenli biçimde taranamadı; gönderim durduruldu: ${error instanceof Error ? error.message : String(error)}`);
-        return finish(null);
+        operation.lastStage = "error";
+        return finish(null, { outcome: "failed", errorCode: "scan-failed" });
       } finally {
         engine.stopWatching();
       }
     }
 
     if (cancelled) return;
+    operation.durations.scanMs = performance.now() - scanStartedAt;
+    operation.lastStage = "scan";
 
     const enforcement = decideScannedFiles(scanned);
     if (enforcement.action === "block") {
       const warnings = scanned.flatMap((item) => item.warnings || []);
       toast(`Gönderim durduruldu: ${blockingReason(warnings, "Tarama bütün koruma katmanlarıyla tamamlanamadı.")}`);
-      return finish(null);
+      return finish(null, { outcome: "blocked", errorCode: "incomplete-protection" });
     }
     // Tam taramada hiçbir şey bulunmadıysa içerik güvenle değişmeden geçer.
     if (enforcement.action === "clean") {
@@ -550,6 +618,8 @@ async function guardFiles(files, deliver) {
     const auditSummaries = [];
     const auditFormats = [];
     let maskedCount = 0;
+    const maskStartedAt = performance.now();
+    operation.lastStage = "mask";
     for (let index = 0; index < scanned.length; index += 1) {
       const item = scanned[index];
       const selectedIds = enforcement.selections.get(index) || [];
@@ -563,7 +633,7 @@ async function guardFiles(files, deliver) {
         total: scanned.length,
         onCancel: () => {
           cancelled = true;
-          void finish(null);
+          void finish(null, { outcome: "cancelled", errorCode: "user-cancelled" });
         },
       });
       panel.setProgress({ detail: "Maskelenmiş kopya hazırlanıyor." });
@@ -580,6 +650,8 @@ async function guardFiles(files, deliver) {
     }
 
     if (cancelled) return;
+    operation.durations.maskMs = performance.now() - maskStartedAt;
+    operation.findingCount = maskedCount;
     // Maskeli kopyanın teslimi rozet/audit gibi yardımcı bildirimlerden önce
     // başlar. Uzantı tam bu anda yeniden yüklense bile güvenli çıktı kaybolmaz.
     await finish(output, { masked: true });
@@ -587,6 +659,8 @@ async function guardFiles(files, deliver) {
     reportAudit({ artifact: "file", summaries: auditSummaries, formats: auditFormats });
   } catch (error) {
     if (!cancelled && !recovering) {
+      operation.lastStage = "error";
+      finishDiagnosticOperation(operation, "failed", "unexpected-error");
       releaseFlow();
       panel.destroy();
       engine?.close();
@@ -670,8 +744,10 @@ async function submitComposer(composer) {
 }
 
 async function guardPrompt({ text, findings, deferred, useModel, composer, caret, mode }) {
+  const operation = newDiagnosticOperation({ artifact: mode === "paste" ? "prompt-paste" : "prompt-send" });
   if (activeFlow) {
     toast("Redakt Guard önceki işi bitirmeden yeni metin taranamaz.");
+    finishDiagnosticOperation(operation, "blocked", "concurrent-operation");
     return;
   }
   const flow = Symbol("prompt-flow");
@@ -686,6 +762,8 @@ async function guardPrompt({ text, findings, deferred, useModel, composer, caret
   let sessionId = null;
   let cancelled = false;
   let settled = false;
+  let diagnosticOutcome = "failed";
+  let diagnosticError = "unexpected-error";
 
   const teardown = () => {
     if (settled) return;
@@ -730,10 +808,14 @@ async function guardPrompt({ text, findings, deferred, useModel, composer, caret
         filename: label,
         onCancel: () => {
           cancelled = true;
+          diagnosticOutcome = "cancelled";
+          diagnosticError = "user-cancelled";
           teardown();
         },
       });
       panel.setProgress({ phase: "connecting", detail: "İlk kullanımda model hazırlanır, bu biraz sürebilir." });
+      operation.lastStage = "engine";
+      const scanStartedAt = performance.now();
       const opened = await EnginePort.open();
       if (cancelled) {
         opened.close();
@@ -742,6 +824,8 @@ async function guardPrompt({ text, findings, deferred, useModel, composer, caret
       engine = opened;
       sessionId = nextId();
       const result = await engine.scanText(sessionId, text, useModel, (progress) => panel.setProgress(progress));
+      operation.durations.scanMs = performance.now() - scanStartedAt;
+      operation.lastStage = "scan";
       findings = result.findings;
       warnings = [...warnings, ...result.warnings];
     }
@@ -751,33 +835,55 @@ async function guardPrompt({ text, findings, deferred, useModel, composer, caret
     const enforcement = decideScannedPrompt(findings, warnings);
     if (enforcement.action === "block") {
       toast(`Prompt gönderimi durduruldu: ${blockingReason(warnings, "Tarama bütün koruma katmanlarıyla tamamlanamadı.")}`);
+      diagnosticOutcome = "blocked";
+      diagnosticError = "incomplete-protection";
       return;
     }
     if (enforcement.action === "clean") {
       // Bulgu yoksa akışı kesmenin anlamı yok; metin olduğu gibi devam eder.
-      await apply(text);
+      const applied = await apply(text);
+      diagnosticOutcome = applied ? "success" : "failed";
+      diagnosticError = applied ? null : "composer-write-failed";
+      operation.lastStage = applied ? "ready" : "error";
       return;
     }
 
     const selectedIds = enforcement.selectedIds;
+    operation.findingCount = selectedIds.length;
+    operation.lastStage = "mask";
+    const maskStartedAt = performance.now();
     const maskedResult = engine
       ? await engine.maskText(sessionId, selectedIds)
       : {
           text: maskPromptText(text, findings, selectedIds),
           audit: summarizeSelectedFindings(findings, selectedIds),
         };
+    operation.durations.maskMs = performance.now() - maskStartedAt;
     const applied = await apply(maskedResult.text, selectedIds);
     if (applied) {
+      diagnosticOutcome = "success";
+      diagnosticError = null;
+      operation.lastStage = "ready";
       reportActivity(selectedIds.length);
       reportAudit({
         artifact: mode === "paste" ? "prompt-paste" : "prompt-send",
         summaries: [maskedResult.audit],
       });
       toast(`${selectedIds.length} bulgu otomatik maskelendi.`);
+    } else {
+      diagnosticOutcome = "failed";
+      diagnosticError = "composer-write-failed";
+      operation.lastStage = "error";
     }
   } catch (error) {
-    if (!cancelled) toast(`Redakt Guard hatası: ${error instanceof Error ? error.message : String(error)}`);
+    if (!cancelled) {
+      operation.lastStage = "error";
+      diagnosticOutcome = "failed";
+      diagnosticError = "prompt-processing-failed";
+      toast(`Redakt Guard hatası: ${error instanceof Error ? error.message : String(error)}`);
+    }
   } finally {
+    finishDiagnosticOperation(operation, diagnosticOutcome, diagnosticError);
     teardown();
   }
 }
@@ -1136,7 +1242,7 @@ async function waitForDelivery(files, baseline, uploadMarker, reportProgress = (
   return { ready: false, observed: true, reason: "timeout" };
 }
 
-async function attemptDelivery(action, files, baseline, reportProgress) {
+async function attemptDelivery(action, files, baseline, reportProgress, method) {
   const uploadMarker = siteUploadEventSequence;
   let dispatched = false;
   try {
@@ -1144,8 +1250,8 @@ async function attemptDelivery(action, files, baseline, reportProgress) {
   } catch {
     dispatched = false;
   }
-  if (!dispatched) return { ready: false, observed: false, reason: "dispatch" };
-  return waitForDelivery(files, baseline, uploadMarker, reportProgress);
+  if (!dispatched) return { ready: false, observed: false, reason: "dispatch", method };
+  return { ...(await waitForDelivery(files, baseline, uploadMarker, reportProgress)), method };
 }
 
 function announceDelivered(files, masked = true) {
@@ -1155,7 +1261,9 @@ function announceDelivered(files, masked = true) {
   toast(`${label} ${SITE} yükleme alanına eklendi ve hazır.`);
 }
 
-function deliveryFailure(kind, result) {
+function deliveryFailure(kind, result, diagnostic) {
+  diagnostic.deliveryMethod = result.method || "unknown";
+  diagnostic.errorCode = result.reason === "network" ? "delivery-network" : result.reason === "timeout" ? "delivery-timeout" : "delivery-rejected";
   const reason = result.reason === "network"
     ? `${SITE} yükleme isteği başarısız oldu`
     : result.observed
@@ -1163,6 +1271,12 @@ function deliveryFailure(kind, result) {
       : `${SITE} yükleme alanı güvenli kopyayı kabul etmedi`;
   toast(`${kind} eklenemedi: ${reason}; gönderim durduruldu.`);
   return false;
+}
+
+function deliveryReady(result, diagnostic) {
+  if (!result.ready) return false;
+  diagnostic.deliveryMethod = result.method || "unknown";
+  return true;
 }
 
 function visibleDropOverlays() {
@@ -1234,7 +1348,7 @@ window.addEventListener(
     // anında var olan input'u sakla; page-guard ona MAIN-world dinleyici bağladı.
     const firstInput = prefersFileInputDelivery() ? findCompatibleFileInput(files) : null;
 
-    void guardFiles(files, async (delivered, reportProgress) => {
+    void guardFiles(files, async (delivered, reportProgress, diagnostic) => {
       let host = target.isConnected ? target : deliveryFallback(clientX, clientY);
       // Drag ile başlayan akışı önce aynı mekanizmayla, fakat sayfanın MAIN
       // dünyasında tamamla. Bu hem Gemini teslimini hem Claude perdesinin kendi
@@ -1243,20 +1357,22 @@ window.addEventListener(
         () => prefersFileInputDelivery() && replayDropInPage(host, delivered, { clientX, clientY }),
         delivered,
         deliveryBaseline,
-        reportProgress
+        reportProgress,
+        "main-drop"
       );
-      if (result.ready) return true;
-      if (result.observed) return deliveryFailure("Güvenli dosya", result);
+      if (deliveryReady(result, diagnostic)) return true;
+      if (result.observed) return deliveryFailure("Güvenli dosya", result, diagnostic);
 
       // MAIN drag yolu kullanılamadıysa gerçek upload input'u ikinci yedektir.
       result = await attemptDelivery(
         () => prefersFileInputDelivery() && deliverToFileInput(firstInput, delivered),
         delivered,
         deliveryBaseline,
-        reportProgress
+        reportProgress,
+        "file-input"
       );
-      if (result.ready) return true;
-      if (result.observed) return deliveryFailure("Güvenli dosya", result);
+      if (deliveryReady(result, diagnostic)) return true;
+      if (result.observed) return deliveryFailure("Güvenli dosya", result, diagnostic);
 
       const transfer = makeTransfer(delivered);
       result = await attemptDelivery(async () => {
@@ -1275,9 +1391,9 @@ window.addEventListener(
         host = deliveryFallback(clientX, clientY);
         dispatchDrag(host, "dragleave", transfer, { clientX: -1, clientY: -1 });
         return true;
-      }, delivered, deliveryBaseline, reportProgress);
-      if (result.ready) return true;
-      return deliveryFailure("Güvenli dosya", result);
+      }, delivered, deliveryBaseline, reportProgress, "synthetic-drop");
+      if (deliveryReady(result, diagnostic)) return true;
+      return deliveryFailure("Güvenli dosya", result, diagnostic);
     }).finally(() => cleanupDropUi(target, clientX, clientY).catch(() => {}));
   },
   true
@@ -1304,17 +1420,18 @@ function interceptFileInput(event) {
   input.value = "";
   const deliveryBaseline = deliveryUiBaseline();
 
-  void guardFiles(files, async (delivered, reportProgress) => {
+  void guardFiles(files, async (delivered, reportProgress, diagnostic) => {
     // Önce kullanıcının seçtiği input denenir: doğrudan MAIN-world dinleyicisi
     // DOM'dan ayrılmış olsa bile üzerinde kalır. Sonra güncel eşdeğeri aranır.
     const result = await attemptDelivery(
       () => deliverToFileInput(input, delivered),
       delivered,
       deliveryBaseline,
-      reportProgress
+      reportProgress,
+      "file-input"
     );
-    if (result.ready) return true;
-    return deliveryFailure("Güvenli dosya", result);
+    if (deliveryReady(result, diagnostic)) return true;
+    return deliveryFailure("Güvenli dosya", result, diagnostic);
   });
 }
 
@@ -1350,26 +1467,28 @@ window.addEventListener(
     const target = event.target?.isConnected ? event.target : document.activeElement || document.body;
     const firstInput = prefersFileInputDelivery() ? findCompatibleFileInput(files) : null;
     const deliveryBaseline = deliveryUiBaseline();
-    void guardFiles(files, async (delivered, reportProgress) => {
+    void guardFiles(files, async (delivered, reportProgress, diagnostic) => {
       // Görsel yapıştırma da dosya yükleme hattıdır. Gemini/Claude sentetik
       // ClipboardEvent'i yok sayarsa gerçek upload input'u üzerinden teslim et.
       let result = await attemptDelivery(
         () => prefersFileInputDelivery() && deliverToFileInput(firstInput, delivered),
         delivered,
         deliveryBaseline,
-        reportProgress
+        reportProgress,
+        "file-input"
       );
-      if (result.ready) return true;
-      if (result.observed) return deliveryFailure("Güvenli görsel", result);
+      if (deliveryReady(result, diagnostic)) return true;
+      if (result.observed) return deliveryFailure("Güvenli görsel", result, diagnostic);
 
       result = await attemptDelivery(
         () => prefersFileInputDelivery() && replayDropInPage(target, delivered),
         delivered,
         deliveryBaseline,
-        reportProgress
+        reportProgress,
+        "main-drop"
       );
-      if (result.ready) return true;
-      if (result.observed) return deliveryFailure("Güvenli görsel", result);
+      if (deliveryReady(result, diagnostic)) return true;
+      if (result.observed) return deliveryFailure("Güvenli görsel", result, diagnostic);
 
       const transfer = makeTransfer(delivered);
       let replay = null;
@@ -1388,9 +1507,9 @@ window.addEventListener(
           synthetic.add(replay);
           target.dispatchEvent(replay);
           return true;
-        }, delivered, deliveryBaseline, reportProgress);
-        if (result.ready) return true;
-        if (result.observed) return deliveryFailure("Güvenli görsel", result);
+        }, delivered, deliveryBaseline, reportProgress, "clipboard");
+        if (deliveryReady(result, diagnostic)) return true;
+        if (result.observed) return deliveryFailure("Güvenli görsel", result, diagnostic);
       }
       // ClipboardEvent taşınamadıysa dosya, aynı hedefe bırakma olayı olarak verilir.
       const fallback = new DragEvent("drop", {
@@ -1403,9 +1522,9 @@ window.addEventListener(
         synthetic.add(fallback);
         target.dispatchEvent(fallback);
         return true;
-      }, delivered, deliveryBaseline, reportProgress);
-      if (result.ready) return true;
-      return deliveryFailure("Güvenli görsel", result);
+      }, delivered, deliveryBaseline, reportProgress, "synthetic-drop");
+      if (deliveryReady(result, diagnostic)) return true;
+      return deliveryFailure("Güvenli görsel", result, diagnostic);
     });
   },
   true

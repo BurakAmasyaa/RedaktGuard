@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 
 import { GUARDED_MATCHES } from "../guard/src/hosts.js";
 import { createAuditEvent, normalizeAuditEvent, summarizeSelectedFindings } from "../guard/src/audit.js";
+import { createDiagnosticReport, normalizeDiagnosticEvent } from "../guard/src/diagnostics.js";
 import { decideScannedFiles, decideScannedPrompt } from "../guard/src/enforcement.js";
 import { guardManifest } from "../guard/manifest.mjs";
 import { connectRuntime, runtimeOrThrow, sendRuntimeMessage, sendRuntimeMessageBestEffort } from "../guard/src/runtime.js";
@@ -114,6 +115,112 @@ test("background normalizasyonu sonradan eklenen ham alanları düşürür", () 
   const normalized = normalizeAuditEvent(raw);
   assert.equal("value" in normalized, false);
   assert.equal("filename" in normalized, false);
+});
+
+test("tanılama olayı yalnız allowlist alanlarını taşır", () => {
+  const event = normalizeDiagnosticEvent({
+    schema: 1,
+    operationId: AUDIT_EVENT_ID,
+    startedAt: AUDIT_CREATED_AT,
+    finishedAt: "2026-09-01T08:30:04.000Z",
+    site: "gemini",
+    artifact: "file",
+    outcome: "failed",
+    fileCount: 1,
+    formats: ["pdf"],
+    findingCount: 3,
+    durations: { scanMs: 1200, maskMs: 800, deliveryMs: 2000, totalMs: 4000 },
+    device: "wasm",
+    deliveryMethod: "file-input",
+    lastStage: "delivery",
+    errorCode: "delivery-timeout",
+    filename: "Yonetim-Maaslari.pdf",
+    prompt: "Ahmet Yılmaz ahmet@sirket.local",
+    errorMessage: "Dosya C:\\Users\\Ahmet altında",
+    serverUrl: "https://redakt.secret.local",
+  });
+  const serialized = JSON.stringify(event);
+  assert.equal(event.deliveryMethod, "file-input");
+  assert.equal(event.durations.totalMs, 4000);
+  for (const secret of ["Yonetim-Maaslari", "Ahmet", "sirket.local", "redakt.secret.local", "errorMessage"]) {
+    assert.doesNotMatch(serialized, new RegExp(secret, "iu"));
+  }
+  assert.deepEqual(normalizeDiagnosticEvent({
+    ...event,
+    schema: 1,
+    operationId: AUDIT_EVENT_ID,
+    startedAt: AUDIT_CREATED_AT,
+    finishedAt: "2026-09-01T08:30:04.000Z",
+    site: "gemini",
+    artifact: "file",
+    outcome: "failed",
+    formats: ["pdf", "salary2026"],
+  }).formats, ["pdf"], "dosya uzantısı görünümündeki serbest veri rapora girdi");
+});
+
+test("indirilen tanılama raporu tarayıcı ve aşamaları gösterir, ham izi göstermez", () => {
+  const report = createDiagnosticReport({
+    version: "1.0.5",
+    userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit Chrome/152.0.0.0 Safari/537.36 Edg/152.0.0.0",
+    platform: "Windows",
+    locale: "tr-TR",
+    profile: "balanced",
+    serverConfigured: true,
+    rulesStatus: "ready",
+    rulesCount: 12,
+    engineDevice: "webgpu",
+    auditPending: 2,
+    trace: [{ at: AUDIT_CREATED_AT, step: "maskeleme bitti", detail: "Ahmet Yılmaz · gizli.pdf" }],
+    events: [],
+    generatedAt: AUDIT_CREATED_AT,
+  });
+  assert.deepEqual(report.runtime.browser, { family: "Edge", version: "152.0.0.0" });
+  assert.equal(report.runtime.os, "Windows");
+  assert.equal(report.trace.lastStage, "mask");
+  assert.equal(report.privacy.containsDocumentContent, false);
+  const serialized = JSON.stringify(report);
+  assert.doesNotMatch(serialized, /Ahmet|gizli\.pdf|redakt\.secret/iu);
+});
+
+test("tanılama raporu ayarlardan tek tıkla indirilir ve background'da normalize edilir", async () => {
+  const background = await source("guard/src/background.js");
+  const options = await source("guard/src/options/options.js");
+  const html = await source("guard/src/options/options.html");
+  const manifest = guardManifest("1.0.5");
+  assert.match(background, /case MSG\.diagnosticOperation:/u);
+  assert.match(background, /normalizeDiagnosticEvent\(raw\)/u);
+  assert.match(background, /case MSG\.readDiagnostics:/u);
+  assert.match(background, /createDiagnosticReport\(/u);
+  assert.match(html, /id="downloadDiagnostics"/u);
+  assert.match(options, /new Blob\(/u);
+  assert.match(options, /redakt-guard-diagnostics-/u);
+  assert.match(options, /link\.download/u);
+  assert.ok(!manifest.permissions.includes("downloads"), "yerel JSON indirmek için gereksiz geniş izin istendi");
+});
+
+test("Chrome ve Edge E2E paketi gerçek site originlerinde izole fixture çalıştırır", async () => {
+  const runner = await source("tests/e2e/run.mjs");
+  const fixture = await source("tests/e2e/fixture-page.mjs");
+  const workflow = await source(".github/workflows/guard-browser-e2e.yml");
+  const pkg = JSON.parse(await source("package.json"));
+  for (const origin of ["https://chatgpt.com/", "https://gemini.google.com/", "https://claude.ai/"]) {
+    assert.match(runner, new RegExp(origin.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&"), "u"));
+  }
+  assert.match(runner, /Fetch\.fulfillRequest/u, "fixture gerçek site ağından izole edilmiyor");
+  assert.match(runner, /disable-extensions-except/u, "paketlenmiş uzantı tarayıcıya yüklenmiyor");
+  assert.match(runner, /extracted\.includes\(secret\)/u, "özgün sentetik değer sızıntısı denetlenmiyor");
+  assert.match(runner, /received\.length/u, "çift teslim denetlenmiyor");
+  assert.match(runner, /Promise\.all\(concurrent/u, "çoklu sekme senaryosu yok");
+  for (const format of ["txt", "pdf", "docx", "xlsx", "png"]) {
+    assert.match(runner, new RegExp(`id: "${format}"`, "u"), `${format} E2E fixture eksik`);
+  }
+  assert.match(fixture, /input\.addEventListener\("change"/u);
+  assert.match(workflow, /browser: \[chrome, edge\]/u);
+  assert.match(workflow, /last-known-good-versions-with-downloads\.json/u, "CI Chrome for Testing kurmuyor");
+  assert.match(runner, /GUARD_E2E_CHROME_BINARY/u, "yerel Chrome for Testing yolu seçilemiyor");
+  assert.match(runner, /verifyDiagnosticReport/u, "tarayıcı testi tanılama entegrasyonunu doğrulamıyor");
+  assert.match(workflow, /tags:\s*\n\s*- "v\*"/u);
+  assert.equal(pkg.scripts["test:e2e"], "node tests/e2e/run.mjs");
 });
 
 test("yardımcı runtime bildirimi uzantı bağlamı yokken teslim akışını düşürmez", async () => {
@@ -414,7 +521,7 @@ test("sürükleme perdesi başarı, iptal ve hata sonunda kesin olarak kapatıl�
   assert.match(cleanup, /dispatchDrag\(target, "dragend"/u);
   assert.match(cleanup, /key: "Escape"/u);
 
-  const delivery = code.slice(code.indexOf("guardFiles(files, async (delivered, reportProgress)"), code.indexOf("  },\n  true\n);"));
+  const delivery = code.slice(code.indexOf("guardFiles(files, async (delivered, reportProgress, diagnostic)"), code.indexOf("  },\n  true\n);"));
   const enterAt = delivery.indexOf('dispatchDrag(host, "dragenter"');
   const firstFrameAt = delivery.indexOf("await nextFrame()", enterAt);
   const retargetAt = delivery.indexOf("host = deliveryFallback", firstFrameAt);
@@ -448,7 +555,7 @@ test("Gemini ve Claude güvenli kopyayı MAIN-world dosya girdisine teslim eder"
     "iptal sonrası site drop perdesi MAIN dünyasında kapatılmıyor");
 
   const dropFlow = code.slice(
-    code.indexOf("guardFiles(files, async (delivered, reportProgress)"),
+    code.indexOf("guardFiles(files, async (delivered, reportProgress, diagnostic)"),
     code.indexOf("function interceptFileInput")
   );
   const mainDropAt = dropFlow.indexOf("replayDropInPage(host, delivered");
@@ -901,13 +1008,13 @@ test("teslim her sitede katmanlı ve doğrulanır; site-özel kapı yok", async 
   assert.match(code, /const prefersFileInputDelivery = \(\) => true;/u, "teslim yine site-özel kapıya alınmış");
   assert.doesNotMatch(code, /prefersFileInputDelivery = \(\) => SITE_ID ===/u);
 
-  const dropStart = code.indexOf("guardFiles(files, async (delivered, reportProgress)");
+  const dropStart = code.indexOf("guardFiles(files, async (delivered, reportProgress, diagnostic)");
   const dropEnd = code.indexOf("function interceptFileInput", dropStart);
   const drop = code.slice(dropStart, dropEnd);
   // Girdi teslimi denenmeli ve sonuç beklenmeli; başarısızsa kullanıcı duymalı.
   assert.match(drop, /deliverToFileInput\(firstInput, delivered\)/u, "drop yolunda girdi teslimi yok");
   assert.match(drop, /await attemptDelivery\(/u, "teslim doğrulanmıyor");
-  assert.match(drop, /deliveryFailure\("Güvenli dosya", result\)/u, "sessiz kayıp geri geldi");
+  assert.match(drop, /deliveryFailure\("Güvenli dosya", result, diagnostic\)/u, "sessiz kayıp geri geldi");
 });
 
 // gemini.google.com'da canlı ölçüldü: dosya girdisi yalnız "Yükleme ve araçlar"
@@ -930,7 +1037,7 @@ test("teslim anında dosya girdisi yoksa yükleme menüsü açılıp taze girdi 
   assert.ok(calls.length >= 3, `çağrı yeri sayısı beklenmedik: ${calls.length}`);
   const attempt = code.slice(code.indexOf("async function attemptDelivery("), code.indexOf("function announceDelivered("));
   assert.match(attempt, /dispatched = Boolean\(await action\(\)\)/u, "teslim eylemi beklenmiyor");
-  assert.match(attempt, /return waitForDelivery\(files, baseline, uploadMarker, reportProgress\)/u, "site kabulü beklenmiyor");
+  assert.match(attempt, /await waitForDelivery\(files, baseline, uploadMarker, reportProgress\)/u, "site kabulü beklenmiyor");
 });
 
 // Uzantı yüklenmeden açık kalan sekmeye içerik betiği girmez: panel yok, uyarı

@@ -89,8 +89,9 @@ npm run build
 ```
 
 Derleme yalnız kodu yeniler; `dist-guard/models` ve `dist-guard/ocr` yerinde kalır.
-Mimari, güvenlik sınırları, hız ölçümleri ve kapsam dışı durumlar için
-[Guard dokümantasyonuna](guard/README.md) bakın.
+
+Kurumsal pilot tanılaması, Chrome/Edge E2E komutları, mimari, güvenlik sınırları,
+hız ölçümleri ve kapsam dışı durumlar için [Guard belgelerine](guard/README.md) bakın.
 
 ## Lisans
 

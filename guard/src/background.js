@@ -4,6 +4,7 @@
 
 import { fetchCorporateRules } from "../../src/rule-source.js";
 import { AUDIT_ENDPOINT, AUDIT_QUEUE_KEY, normalizeAuditEvent } from "./audit.js";
+import { createDiagnosticReport, DIAGNOSTIC_EVENTS_KEY, normalizeDiagnosticEvent } from "./diagnostics.js";
 import { ENGINE_PORT, ENGINE_RELAY_PORT, MSG } from "./protocol.js";
 import { CRASH_KEY, DEVICE_KEY, TRACE_KEY, readRules, readSettings, writeRules, writeSettings } from "./settings.js";
 
@@ -13,6 +14,7 @@ const RULES_PERIOD_MINUTES = 360;
 const AUDIT_QUEUE_LIMIT = 500;
 const AUDIT_MAX_AGE_MS = 30 * 86_400_000;
 const AUDIT_TIMEOUT_MS = 15_000;
+const DIAGNOSTIC_EVENT_LIMIT = 30;
 
 let creating = null;
 let restarting = null;
@@ -192,6 +194,47 @@ function retryAudits() {
   return scheduleAudit(() => flushAuditQueue());
 }
 
+// Tanılama olayları yalnız allowlist'li sayaç ve sürelerden oluşur. session
+// storage tarayıcı kapanınca temizlenir; destek raporu son 30 işlemi taşır.
+let diagnosticWork = Promise.resolve();
+
+function recordDiagnosticEvent(raw) {
+  const event = normalizeDiagnosticEvent(raw);
+  const next = diagnosticWork.then(async () => {
+    const stored = await chrome.storage.session.get(DIAGNOSTIC_EVENTS_KEY);
+    const events = Array.isArray(stored?.[DIAGNOSTIC_EVENTS_KEY]) ? stored[DIAGNOSTIC_EVENTS_KEY] : [];
+    await chrome.storage.session.set({ [DIAGNOSTIC_EVENTS_KEY]: [...events.slice(-(DIAGNOSTIC_EVENT_LIMIT - 1)), event] });
+    return event.operationId;
+  });
+  diagnosticWork = next.catch(() => {});
+  return next;
+}
+
+async function diagnosticReport() {
+  await diagnosticWork.catch(() => {});
+  const [settings, rules, state, auditQueue] = await Promise.all([
+    readSettings(),
+    readRules(),
+    chrome.storage.session.get([CRASH_KEY, DEVICE_KEY, TRACE_KEY, DIAGNOSTIC_EVENTS_KEY]),
+    readAuditQueue(),
+  ]);
+  return createDiagnosticReport({
+    version: chrome.runtime.getManifest().version,
+    userAgent: navigator.userAgent,
+    platform: navigator.userAgentData?.platform || navigator.platform,
+    locale: navigator.language,
+    profile: settings.profile,
+    serverConfigured: Boolean(settings.serverUrl),
+    rulesStatus: rules.status,
+    rulesCount: rules.rules.length,
+    engineDevice: state?.[DEVICE_KEY] || "unknown",
+    engineRecovered: Boolean(state?.[CRASH_KEY]),
+    auditPending: auditQueue.length,
+    trace: state?.[TRACE_KEY] || [],
+    events: state?.[DIAGNOSTIC_EVENTS_KEY] || [],
+  });
+}
+
 // Sayaç service worker belleğinde tutulamaz: SW 30 saniyede uykuya dalar ve
 // rozet geriye düşer. storage.session tarayıcı oturumu boyunca yaşar, diske
 // yazılmaz — sayfa başına kaç maskeleme yapıldığı diskte iz bırakmamalı.
@@ -294,6 +337,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         const stored = await chrome.storage.session.get(TRACE_KEY);
         return { ok: true, trace: stored?.[TRACE_KEY] || [] };
       }
+      case MSG.readDiagnostics:
+        return { ok: true, report: await diagnosticReport() };
+      case MSG.diagnosticOperation:
+        return { ok: true, operationId: await recordDiagnosticEvent(message.event) };
       case MSG.readRules:
         return { ok: true, ...(await readRules()) };
       case MSG.readEngineState: {

@@ -247,6 +247,49 @@ Ayarlar → **Sorun giderme** → **Motoru sına**. İz, akışın nerede durdu�
 söyler; yalnız adım adları tutulur, dosya adı ve içerik asla yazılmaz. `motor:` satırları
 hiç yoksa offscreen belge kurulmamıştır; `ready` gelip sonrası yoksa motor yanıt vermiyordur.
 
+Aynı bölümdeki **Tanılama raporunu indir** düğmesi destek ekibine verilebilecek bir
+JSON üretir. Raporda Guard/tarayıcı/işletim sistemi sürümü, motor yolu, kural durumu,
+son işlemlerin site ve türü, tarama–maskeleme–teslim süreleri, teslim yöntemi, sonuç,
+son aşama ve hata kodu bulunur. Dosya adı, sunucu adresi, belge içeriği, prompt,
+gerçek bulgu değeri ve serbest biçimli hata metni rapora alınmaz. Olay geçmişi
+`storage.session` içinde en fazla 30 kayıt tutulur ve tarayıcı kapanınca silinir.
+
+## Chrome ve Edge otomatik E2E
+
+Bağımlılık veya ayrı test framework'ü gerektirmeyen CDP koşucusu, paketlenmiş
+`dist-guard` uzantısını gerçek Chrome/Edge sürecine yükler. ChatGPT, Gemini ve Claude
+originlerindeki belge istekleri ağdan önce izole fixture sayfalarıyla karşılanır; gerçek
+hesaba bağlanılmaz ve hiçbir mesaj gönderilmez. Böylece uzantının gerçek origin eşleşmesi,
+MAIN/ISOLATED içerik betikleri, offscreen motoru ve dosya teslimi birlikte çalışır.
+
+Tam sürüm matrisi her sitede sentetik TXT, PDF, DOCX, XLSX ve PNG dosyalarını; ayrıca
+ChatGPT + Gemini eşzamanlı sekme akışını sınar. Özgün e-posta/telefonun metin çıktılarda
+kalmadığı, ikili çıktıların geçerli ve özgün dosyadan farklı olduğu, `_redakte` adının
+geldiği ve siteye yalnız tek kopya teslim edildiği doğrulanır.
+
+```bash
+# Edge'i ve uyumlu Chromium/Chrome for Testing kurulumunu otomatik bulur
+npm run test:e2e
+
+# Tek tarayıcı veya hızlı TXT kontrolü
+npm run test:e2e -- --browser=chrome --quick
+npm run test:e2e -- --browser=edge --headed
+
+# Chrome for Testing özel bir konumdaysa
+GUARD_E2E_CHROME_BINARY=/tam/yol/chrome npm run test:e2e -- --browser=chrome
+```
+
+Google Chrome'un resmi dağıtımı 137 ve sonrasında komut satırından paketlenmemiş
+uzantı yüklemeyi kısıtladığı için otomasyon Chrome for Testing/Chromium kullanır.
+Windows CI kararlı Chrome for Testing sürümünü Google'ın resmi manifestinden indirir;
+Edge işi cihazdaki Edge kurulumunu kullanır. Bu ayrım son kullanıcı desteğini değiştirmez:
+üretilen Manifest V3 paketi hem Chrome hem Edge'e normal kurulumla yüklenebilir.
+
+`.github/workflows/guard-browser-e2e.yml`, `v*` sürüm etiketi pushlandığında Windows'ta
+Chrome ve Edge işlerini ayrı ayrı çalıştırır. Bu deterministik paket site adaptörünün
+ve tarayıcı entegrasyonunun regresyonunu yakalar; canlı sitenin o günkü DOM değişimini
+doğrulamak için sürüm kabulünde kısa bir gerçek hesap smoke testi yine yapılmalıdır.
+
 ## Ayarlar
 
 Araç çubuğundaki simge ayarlar sayfasını açar.
@@ -345,6 +388,7 @@ belgede kalmadığını doğrular.
 | [build.mjs](build.mjs) | Üç derleme: motor bağlamı (ESM), içerik betikleri (IIFE), varlıklar |
 | [src/background.js](src/background.js) | Offscreen ömrü, kural tazeleme, rozet |
 | [src/audit.js](src/audit.js) | Ham değer taşımayan audit özeti ve kuyruk şeması |
+| [src/diagnostics.js](src/diagnostics.js) | PII içermeyen tanılama olayı ve indirilebilir rapor şeması |
 | [src/enforcement.js](src/enforcement.js) | Zorunlu otomatik maskeleme/fail-closed karar çekirdeği |
 | [src/offscreen.js](src/offscreen.js) | Port sunucusu; tarama ve maskeleme oturumları |
 | [src/engine.js](src/engine.js) | `src/pipeline.js` sarmalayıcısı — Desktop ile aynı hat |
