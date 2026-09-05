@@ -80,6 +80,13 @@ async function executable(kind) {
 
 const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
+// Edge'in yardımcı süreçleri Windows'ta ana süreç kapandıktan kısa süre sonra
+// profil dosyalarını bırakabilir. EBUSY/EPERM için sınırlı bekleme uygulanır;
+// temizliğin başarısızlığı dosya teslim testinin sonucunu rastgele düşürmesin.
+const removeTemporaryDirectory = (directory) => fs.rm(directory, {
+  recursive: true, force: true, maxRetries: 10, retryDelay: 250,
+});
+
 async function waitUntil(check, { timeout = timeoutMs, interval = 200, message = "Koşul zaman aşımına uğradı." } = {}) {
   const deadline = Date.now() + timeout;
   let lastError = null;
@@ -134,7 +141,7 @@ async function launch(kind, binary) {
     await client.send("Browser.close").catch(() => {});
     client.close();
     await waitUntil(() => child.exitCode !== null, { timeout: 5_000 }).catch(() => child.kill());
-    await fs.rm(profileDir, { recursive: true, force: true });
+    await removeTemporaryDirectory(profileDir);
   };
   return { client, close, product: version.Browser || kind };
 }
@@ -259,9 +266,9 @@ async function triggerFile(client, sessionId, fixture, suffix = "") {
     await client.send("DOM.setFileInputFiles", { nodeId, files: [filename] }, sessionId);
     // Guard baytları eşzamansız okuyabilir; çıktı veya terminal olaya kadar
     // dosya diskte tutulur. Temizliği readOutcome sonrasındaki finally yapar.
-    return () => fs.rm(directory, { recursive: true, force: true });
+    return () => removeTemporaryDirectory(directory);
   } catch (error) {
-    await fs.rm(directory, { recursive: true, force: true });
+    await removeTemporaryDirectory(directory);
     throw error;
   }
 }
