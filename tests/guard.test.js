@@ -29,7 +29,10 @@ import {
 import { base64ToBytes, bytesToBase64, chunkBytes, chunkCount, joinChunks } from "../guard/src/transfer.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const source = (relativePath) => fs.readFile(path.join(root, relativePath), "utf8");
+// Git Windows checkout'unda CRLF kullanabilir. Kaynak yapısı kontrolleri
+// işletim sisteminin satır sonuna değil aynı JavaScript metnine uygulanır.
+const source = (relativePath) => fs.readFile(path.join(root, relativePath), "utf8")
+  .then((text) => text.replace(/\r\n/gu, "\n"));
 const AUDIT_EVENT_ID = "123e4567-e89b-12d3-a456-426614174000";
 const AUDIT_CREATED_AT = "2026-09-01T08:30:00.000Z";
 
