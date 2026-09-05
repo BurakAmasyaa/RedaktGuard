@@ -23,8 +23,10 @@ async function loadPdfRuntime() {
   pdfRuntimePromise = (async () => {
     if (typeof window === "undefined") return import("pdfjs-dist/legacy/build/pdf.mjs");
     const [runtime, workerModule] = await Promise.all([
-      import("pdfjs-dist"),
-      import("pdfjs-dist/build/pdf.worker.min.mjs?url"),
+      // Ana modül ve worker aynı legacy sürümden gelmeli: kurumsal tarayıcıda
+      // yeni Promise/Map API'lerinin eksikliği PDF açılışını durdurmasın.
+      import("pdfjs-dist/legacy/build/pdf.mjs"),
+      import("pdfjs-dist/legacy/build/pdf.worker.min.mjs?url"),
     ]);
     runtime.GlobalWorkerOptions.workerSrc = workerModule.default;
     return runtime;

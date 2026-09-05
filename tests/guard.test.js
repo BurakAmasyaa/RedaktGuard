@@ -160,9 +160,6 @@ test("tanılama olayı yalnız allowlist alanlarını taşır", () => {
 
 test("Windows/VM ortamında bağımsız CPU runtime ve yeni worker geri dönüşü kullanılır", async () => {
   const ner = await source("src/ner.js");
-  assert.match(ner, /buildPipelineWithWasmFallback/u);
-  assert.match(ner, /device !== "wasm"/u);
-  assert.match(ner, /env\.backends\.onnx\.wasm\.numThreads = 1/u);
   assert.match(ner, /gpu\.requestAdapter\(\)/u);
   assert.match(ner, /ort-wasm-simd-threaded\.mjs\?url/u);
   assert.match(ner, /ort-wasm-simd-threaded\.wasm\?url/u);
@@ -233,7 +230,8 @@ test("Chrome ve Edge E2E paketi gerçek site originlerinde izole fixture çalı�
     assert.match(runner, new RegExp(`id: "${format}"`, "u"), `${format} E2E fixture eksik`);
   }
   assert.match(fixture, /input\.addEventListener\("change"/u);
-  assert.match(workflow, /browser: \[chrome, edge\]/u);
+  assert.match(workflow, /browser: chrome/u);
+  assert.match(workflow, /browser: edge/u);
   assert.match(workflow, /last-known-good-versions-with-downloads\.json/u, "CI Chrome for Testing kurmuyor");
   assert.match(workflow, /--timeout=600000/u, "Windows ilk model ısınması için E2E zaman aşımı kısa");
   assert.match(runner, /GUARD_E2E_CHROME_BINARY/u, "yerel Chrome for Testing yolu seçilemiyor");

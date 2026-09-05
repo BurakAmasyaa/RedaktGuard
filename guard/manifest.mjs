@@ -14,8 +14,8 @@ export function guardManifest(version, matches = [...GUARDED_MATCHES]) {
     version,
     description:
       "Yapay zekâ araçlarına yüklenen belgeleri cihaz üzerinde tarar, hassas bilgileri maskeler ve ancak öyle gönderir.",
-    // chrome.runtime.getContexts 116'da geldi; MAIN dünyası içerik betiği 111'de.
-    minimum_chrome_version: "116",
+    // PDF.js 6 legacy'nin desteklediği Chromium alt sınırı (Chrome/Edge).
+    minimum_chrome_version: "125",
     background: { service_worker: "background.js", type: "module" },
     // Geniş host izni istenmez: kural sunucusuna erişim ayarlar sayfasından,
     // kullanıcının onayıyla tek adres için alınır.

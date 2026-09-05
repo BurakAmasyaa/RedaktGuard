@@ -266,6 +266,9 @@ Tam sürüm matrisi her sitede sentetik TXT, PDF, DOCX, XLSX ve PNG dosyaların�
 ChatGPT + Gemini eşzamanlı sekme akışını sınar. Özgün e-posta/telefonun metin çıktılarda
 kalmadığı, ikili çıktıların geçerli ve özgün dosyadan farklı olduğu, `_redakte` adının
 geldiği ve siteye yalnız tek kopya teslim edildiği doğrulanır.
+Dosyalar diskte Türkçe karakter ve boşluk içeren geçici dizinlere yazılır;
+`DOM.setFileInputFiles` ile gerçek tarayıcı dosya girdisinden geçirilir. Windows
+dosya seçici penceresini veya canlı sitenin yükleme sunucusunu otomatik test etmez.
 
 ```bash
 # Edge'i ve uyumlu Chromium/Chrome for Testing kurulumunu otomatik bulur
@@ -274,6 +277,7 @@ npm run test:e2e
 # Tek tarayıcı veya hızlı TXT kontrolü
 npm run test:e2e -- --browser=chrome --quick
 npm run test:e2e -- --browser=edge --headed
+npm run test:e2e -- --browser=chrome --safe-mode
 
 # Chrome for Testing özel bir konumdaysa
 GUARD_E2E_CHROME_BINARY=/tam/yol/chrome npm run test:e2e -- --browser=chrome
@@ -287,8 +291,12 @@ Edge işi cihazdaki Edge kurulumunu kullanır. Bu ayrım son kullanıcı desteğ
 Windows koşucusunda ilk yerel model ısınması daha yavaş olabildiğinden senaryo üst
 sınırı 10 dakikadır; her dosya türünün başlangıcı iş günlüğünde ayrı görünür.
 
-`.github/workflows/guard-browser-e2e.yml`, `v*` sürüm etiketi pushlandığında Windows'ta
-Chrome ve Edge işlerini ayrı ayrı çalıştırır. Bu deterministik paket site adaptörünün
+`.github/workflows/guard-browser-e2e.yml`, `main` veya `v*` sürüm etiketi pushlandığında
+Windows'ta kararlı Chrome, kararlı Edge ve minimum Chrome 125 işlerini ayrı çalıştırır.
+Chrome 125 işi motoru güvenli modda yeniden başlatır ve CPU/WASM yolunu doğrular.
+Minimum desteklenen sürüm Chrome/Edge 125'tir; PDF.js legacy ana modülü ve worker'ı
+birlikte paketlenir ([PDF.js desteği](https://github.com/mozilla/pdf.js/wiki/Frequently-Asked-Questions#which-browsersenvironments-are-supported)).
+Bu deterministik paket site adaptörünün
 ve tarayıcı entegrasyonunun regresyonunu yakalar; canlı sitenin o günkü DOM değişimini
 doğrulamak için sürüm kabulünde kısa bir gerçek hesap smoke testi yine yapılmalıdır.
 

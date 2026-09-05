@@ -116,7 +116,8 @@ function request(payload, { signal, onProgress } = {}) {
 // WebGPU adapter'ı model kurulurken veya ilk çıkarımda kaybolabilir. ORT aynı
 // worker içinde bir kez JSEP ile başlatıldıktan sonra wasmPaths değiştirmek
 // güvenilir değildir. Hata halinde worker zaten dropWorker ile bırakılır;
-// ikinci ve son deneme yeni worker'da bağımsız CPU/WASM runtime'ı kullanır.
+// ikinci ve son deneme yeni worker'da tek iş parçacıklı CPU/WASM kullanır.
+// Aynı yol çok iş parçacıklı WASM'in başlatılamamasını da kurtarır.
 async function requestWithDeviceFallback(payload, options = {}) {
   try {
     return await request(payload, options);
@@ -125,7 +126,7 @@ async function requestWithDeviceFallback(payload, options = {}) {
     options.onProgress?.({
       phase: "model",
       status: "fallback",
-      detail: "Grafik hızlandırma kullanılamadı; güvenli CPU yolu hazırlanıyor.",
+      detail: "Yerel motor yeniden hazırlanıyor; işlem otomatik devam edecek.",
     });
     return request({ ...payload, preferDevice: "wasm" }, options);
   }

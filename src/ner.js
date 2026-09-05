@@ -36,7 +36,9 @@ function configureOnnxRuntime(device) {
   };
   // WASM çoklu iş parçacığı SharedArrayBuffer ve çapraz kaynak yalıtımı ister.
   // WebGPU'nun JSEP yardımcı worker'ı ise tek iş parçacığıyla kurulmalıdır.
-  env.backends.onnx.wasm.numThreads = !webGpu && globalThis.crossOriginIsolated
+  // Kurtarma yeni worker'da forcedDevice=wasm ile başlar. Tek iş parçacığı
+  // burada korunmalı; pipeline kurulurken otomatik çekirdek sayısına dönülmez.
+  env.backends.onnx.wasm.numThreads = !webGpu && forcedDevice !== "wasm" && globalThis.crossOriginIsolated
     ? Math.max(1, Math.min(8, globalThis.navigator?.hardwareConcurrency || 4))
     : 1;
 }
@@ -87,20 +89,6 @@ function buildPipeline(device, progressCallback) {
   });
 }
 
-async function buildPipelineWithWasmFallback(device, progressCallback) {
-  try {
-    return await buildPipeline(device, progressCallback);
-  } catch (error) {
-    // Bazı Windows/VM ortamları crossOriginIsolated bildirse de ORT'nin iç
-    // worker'larını başlatamıyor. Çok iş parçacıklı WASM oturumu kurulamazsa
-    // aynı yerel modeli tek iş parçacığıyla bir kez daha dene. Doğruluk aynı;
-    // yalnız ilk yükleme ve çıkarım daha yavaş olur.
-    if (device !== "wasm" || Number(env.backends.onnx.wasm.numThreads) <= 1) throw error;
-    env.backends.onnx.wasm.numThreads = 1;
-    return buildPipeline(device, progressCallback);
-  }
-}
-
 function loadModel(progressCallback) {
   if (!modelPromise) {
     modelPromise = (async () => {
@@ -108,7 +96,9 @@ function loadModel(progressCallback) {
       const order = forcedDevice ? [forcedDevice] : await automaticDeviceOrder();
       for (const device of order) {
         try {
-          const classifier = await buildPipelineWithWasmFallback(device, progressCallback);
+          // ORT başlatma hatasından sonra aynı worker'da yeniden kurulamaz.
+          // ner-client hatalı worker'ı bırakıp tek iş parçacıklı WASM'i dener.
+          const classifier = await buildPipeline(device, progressCallback);
           activeDevice = device;
           return classifier;
         } catch (error) {

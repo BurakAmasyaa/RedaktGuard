@@ -28,6 +28,7 @@ const sampleText = `E2E synthetic record\nEmail: ${secrets[0]}\nPhone: ${secrets
 const explicitBrowser = argument("browser");
 const headed = process.argv.includes("--headed") || process.env.GUARD_E2E_HEADED === "1";
 const quick = process.argv.includes("--quick");
+const safeMode = process.argv.includes("--safe-mode");
 const timeoutMs = Number(argument("timeout") || 180_000);
 
 function argument(name) {
@@ -247,18 +248,22 @@ async function createFixtures() {
 
 async function triggerFile(client, sessionId, fixture, suffix = "") {
   const name = suffix ? fixture.name.replace(/(\.[^.]+)$/u, `-${suffix}$1`) : fixture.name;
-  const base64 = fixture.bytes.toString("base64");
-  return evaluate(client, sessionId, `(async () => {
-    const input = document.getElementById("upload");
-    const transfer = new DataTransfer();
-    const binary = atob(${JSON.stringify(base64)});
-    const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
-    transfer.items.add(new File([bytes], ${JSON.stringify(name)}, { type: ${JSON.stringify(fixture.mime)} }));
-    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "files").set;
-    setter.call(input, transfer.files);
-    input.dispatchEvent(new Event("change", { bubbles: true, composed: true }));
-    return true;
-  })()`);
+  // Tarayıcı gerçek bir disk dosyasını girdiye bağlar ve native change/input
+  // olaylarını üretir. Windows yol/boşluk/Türkçe karakterleri de bu yoldan geçer.
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "redakt-e2e Türkçe dosya "));
+  try {
+    const filename = path.join(directory, name);
+    await fs.writeFile(filename, fixture.bytes);
+    const { root: document } = await client.send("DOM.getDocument", {}, sessionId);
+    const { nodeId } = await client.send("DOM.querySelector", { nodeId: document.nodeId, selector: "#upload" }, sessionId);
+    await client.send("DOM.setFileInputFiles", { nodeId, files: [filename] }, sessionId);
+    // Guard baytları eşzamansız okuyabilir; çıktı veya terminal olaya kadar
+    // dosya diskte tutulur. Temizliği readOutcome sonrasındaki finally yapar.
+    return () => fs.rm(directory, { recursive: true, force: true });
+  } catch (error) {
+    await fs.rm(directory, { recursive: true, force: true });
+    throw error;
+  }
 }
 
 async function validateOutput(fixture, received, label) {
@@ -292,7 +297,14 @@ async function readOutcome(client, target, site, fixture, previousOperationIds) 
       const received = await evaluate(client, sessionId, "window.__redaktFixture && window.__redaktFixture.received[0] || null");
       if (received) return { received };
       const diagnostic = await extensionMessage(client, target, MSG.readDiagnostics).catch(() => null);
-      const terminal = diagnostic?.report?.recentOperations?.find((event) => !previousOperationIds.has(event.operationId));
+      // Tanılama listesi bütün sekmelerce paylaşılır. Diğer sekmenin tamamlanan
+      // işi bu sekmenin başarısızlığı sayılmamalı; başarı mesajı dosya okuma
+      // callback'inden önce de gelebilir.
+      const terminal = diagnostic?.report?.recentOperations?.find((event) =>
+        !previousOperationIds.has(event.operationId)
+        && event.site === site.replace(/-parallel$/u, "")
+        && event.outcome !== "success"
+      );
       return terminal ? { terminal } : null;
     },
     { message: `${site}/${fixture.id} güvenli dosyayı teslim alamadı.` }
@@ -341,6 +353,7 @@ async function verifyDiagnosticReport(client, expectedOperations) {
     assert.equal(report.schema, 1, "tanılama raporu şeması geçersiz");
     assert.equal(report.privacy.containsFileNames, false, "tanılama raporu dosya adı taşıdığını bildiriyor");
     assert.equal(report.privacy.containsDocumentContent, false, "tanılama raporu belge içeriği taşıdığını bildiriyor");
+    if (safeMode) assert.equal(report.engine.device, "wasm", "güvenli mod CPU/WASM üzerinde çalışmadı");
     assert.ok(report.recentOperations.every((event) => event.outcome === "success"), "başarılı E2E akışları tanılamada başarısız göründü");
     const serialized = JSON.stringify(report);
     for (const sensitive of [...secrets, "redakt-e2e", "parallel-0", "parallel-1"]) {
@@ -358,14 +371,26 @@ async function runBrowser(kind, binary, fixtures) {
   const startedAt = Date.now();
   const results = [];
   try {
+    process.stdout.write(`[${kind}] ${browser.product} · izole test sayfaları · ${safeMode ? "tek iş parçacıklı CPU" : "otomatik motor"}\n`);
+    if (safeMode) {
+      const target = await fixtureTarget(browser.client, sites[0]);
+      try {
+        const response = await extensionMessage(browser.client, target, MSG.restartEngine);
+        assert.equal(response?.ok, true, "güvenli motor yeniden başlatılamadı");
+      } finally {
+        target.remove();
+        await browser.client.send("Target.closeTarget", { targetId: target.targetId }).catch(() => {});
+      }
+    }
     for (const site of sites) {
       for (const fixture of fixtures) {
         const target = await fixtureTarget(browser.client, site);
+        let removeFile;
         try {
           process.stdout.write(`[${kind}] ${site.id}/${fixture.id} · taranıyor\n`);
           const before = await extensionMessage(browser.client, target, MSG.readDiagnostics);
           const previousOperationIds = new Set((before?.report?.recentOperations || []).map((event) => event.operationId));
-          await triggerFile(browser.client, target.sessionId, fixture);
+          removeFile = await triggerFile(browser.client, target.sessionId, fixture);
           try {
             results.push(await readOutcome(browser.client, target, site.id, fixture, previousOperationIds));
           } catch (error) {
@@ -374,6 +399,7 @@ async function runBrowser(kind, binary, fixtures) {
             throw error;
           }
         } finally {
+          await removeFile?.();
           target.remove();
           await browser.client.send("Target.closeTarget", { targetId: target.targetId }).catch(() => {});
         }
@@ -383,14 +409,19 @@ async function runBrowser(kind, binary, fixtures) {
     // Paylaşılan offscreen motor kuyruğu ve sekme başına akış kilidi birlikte
     // sınanır: iki ayrı site aynı anda dosya bırakır ve ikisi de tek kopya alır.
     const concurrent = await Promise.all(sites.slice(0, 2).map((site) => fixtureTarget(browser.client, site)));
+    const removeFiles = [];
     try {
       const previousIds = await Promise.all(concurrent.map(async (target) => {
         const before = await extensionMessage(browser.client, target, MSG.readDiagnostics);
         return new Set((before?.report?.recentOperations || []).map((event) => event.operationId));
       }));
-      await Promise.all(concurrent.map((target, index) => triggerFile(browser.client, target.sessionId, fixtures[0], `parallel-${index}`)));
+      const triggered = await Promise.allSettled(concurrent.map(async (target, index) => {
+        removeFiles.push(await triggerFile(browser.client, target.sessionId, fixtures[0], `parallel-${index}`));
+      }));
+      for (const result of triggered) if (result.status === "rejected") throw result.reason;
       results.push(...await Promise.all(concurrent.map((target, index) => readOutcome(browser.client, target, `${sites[index].id}-parallel`, fixtures[0], previousIds[index]))));
     } finally {
+      await Promise.all(removeFiles.map((remove) => remove()));
       for (const target of concurrent) {
         target.remove();
         await browser.client.send("Target.closeTarget", { targetId: target.targetId }).catch(() => {});
@@ -422,6 +453,6 @@ for (const browser of selected) {
   process.stdout.write(`\n[${browser.kind}] Redakt Guard ${manifest.version} E2E başlıyor…\n`);
   const report = await runBrowser(browser.kind, browser.binary, fixtures);
   reports.push(report);
-  process.stdout.write(`[${browser.kind}] PASS · ${report.results.length} güvenli teslim · ${(report.durationMs / 1000).toFixed(1)} sn\n`);
+  process.stdout.write(`[${browser.kind}] PASS · ${report.results.length} izole sayfa dosya teslimi · ${(report.durationMs / 1000).toFixed(1)} sn\n`);
 }
 process.stdout.write(`\nPASS · ${reports.length} tarayıcı · ${reports.reduce((sum, item) => sum + item.results.length, 0)} senaryo\n`);

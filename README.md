@@ -13,6 +13,12 @@ ve masaüstü arayüzü bu deponun kapsamında değildir.
 
 `dist-guard/` depoda hazır durur; klonlayıp doğrudan yüklersiniz.
 
+Minimum sürüm **Chrome 125 / Chromium tabanlı Edge 125**. PDF motoru, eski
+kurumsal tarayıcılardaki eksik JavaScript özellikleri için PDF.js `legacy`
+dağıtımını kullanır. Güncel kararlı tarayıcı sürümü tercih edilmelidir.
+Model başlatılamazsa yeni worker'da tek iş parçacıklı CPU/WASM ile bir kez
+yeniden denenir; bu da başarısızsa gönderim engellenir.
+
 ```bash
 git clone https://github.com/BurakAmasyaa/RedaktGuard.git
 ```
