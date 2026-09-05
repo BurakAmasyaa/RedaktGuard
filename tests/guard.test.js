@@ -158,11 +158,18 @@ test("tanılama olayı yalnız allowlist alanlarını taşır", () => {
   }).formats, ["pdf"], "dosya uzantısı görünümündeki serbest veri rapora girdi");
 });
 
-test("WASM çok iş parçacığı kurulamazsa tek iş parçacığıyla güvenli geri dönüş yapılır", async () => {
+test("Windows/VM ortamında bağımsız CPU runtime ve yeni worker geri dönüşü kullanılır", async () => {
   const ner = await source("src/ner.js");
   assert.match(ner, /buildPipelineWithWasmFallback/u);
   assert.match(ner, /device !== "wasm"/u);
   assert.match(ner, /env\.backends\.onnx\.wasm\.numThreads = 1/u);
+  assert.match(ner, /gpu\.requestAdapter\(\)/u);
+  assert.match(ner, /ort-wasm-simd-threaded\.mjs\?url/u);
+  assert.match(ner, /ort-wasm-simd-threaded\.wasm\?url/u);
+  assert.match(ner, /ort-wasm-simd-threaded\.jsep\.mjs\?url/u);
+  const nerClient = await source("src/ner-client.js");
+  assert.match(nerClient, /requestWithDeviceFallback/u);
+  assert.match(nerClient, /preferDevice: "wasm"/u);
   const engine = await source("guard/src/engine.js");
   assert.match(engine, /code: modelFailureCode\(error\)/u);
   const interceptor = await source("guard/src/content/interceptor.js");

@@ -1,7 +1,10 @@
 import { env, pipeline } from "@huggingface/transformers";
 import { categoryMeta, matchKey, normalizeValue } from "./pii.js";
 import { createModelDownloadAggregator } from "./model-cache.js";
-import ortWasmModuleUrl from "./vendor/ort-wasm-simd-threaded.jsep.mjs?url";
+import ortCpuModuleUrl from "./vendor/ort-wasm-simd-threaded.mjs?url";
+import ortCpuWasmUrl from "./vendor/ort-wasm-simd-threaded.wasm?url";
+import ortWebGpuModuleUrl from "./vendor/ort-wasm-simd-threaded.jsep.mjs?url";
+import ortWebGpuWasmUrl from "./vendor/ort-wasm-simd-threaded.jsep.wasm?url";
 import { processingConfig } from "./profiles.js";
 import { isTechnicalNoise } from "./technical-noise.js";
 
@@ -19,21 +22,21 @@ env.allowRemoteModels = false;
 env.allowLocalModels = true;
 env.useBrowserCache = IS_BROWSER;
 env.localModelPath = `${BASE_URL}models/`;
-if (IS_BROWSER) {
+function configureOnnxRuntime(device) {
+  if (!IS_BROWSER) return;
   const runtimeOrigin = globalThis.location?.origin || "http://127.0.0.1";
+  const webGpu = device === "webgpu";
+  // JSEP derlemesi WebGPU çekirdeklerini içerir; düz WASM derlemesi içermez.
+  // `navigator.gpu` bulunup gerçek adapter bulunamayan Windows/VM ortamında
+  // JSEP'i WASM backend'i olarak yeniden kullanmak da oturumu bozabiliyor.
+  // Her cihaz yolu bu nedenle kendi bağımsız ORT ikilisini yükler.
   env.backends.onnx.wasm.wasmPaths = {
-    mjs: new URL(ortWasmModuleUrl, runtimeOrigin).href,
-    wasm: new URL("./vendor/ort-wasm-simd-threaded.jsep.wasm", import.meta.url).href,
+    mjs: new URL(webGpu ? ortWebGpuModuleUrl : ortCpuModuleUrl, runtimeOrigin).href,
+    wasm: new URL(webGpu ? ortWebGpuWasmUrl : ortCpuWasmUrl, runtimeOrigin).href,
   };
-  // WASM çoklu iş parçacığı SharedArrayBuffer ister, o da çapraz kaynak
-  // yalıtımı ister (COOP + COEP başlıkları). Yalıtım yoksa tek iş parçacığı
-  // zorunludur; birden fazla istemek oturumu hiç kurdurmaz.
-  //
-  // İş parçacıkları YALNIZCA WASM yoluna açılır. WebGPU da aynı JSEP wasm
-  // ikilisi üzerinden koştuğu için, GPU kullanılacakken iş parçacığı istemek
-  // modül worker'ında oturum kurulmasını askıda bırakıyor.
-  const webGpuAvailable = Boolean(globalThis.navigator?.gpu);
-  env.backends.onnx.wasm.numThreads = !webGpuAvailable && globalThis.crossOriginIsolated
+  // WASM çoklu iş parçacığı SharedArrayBuffer ve çapraz kaynak yalıtımı ister.
+  // WebGPU'nun JSEP yardımcı worker'ı ise tek iş parçacığıyla kurulmalıdır.
+  env.backends.onnx.wasm.numThreads = !webGpu && globalThis.crossOriginIsolated
     ? Math.max(1, Math.min(8, globalThis.navigator?.hardwareConcurrency || 4))
     : 1;
 }
@@ -53,12 +56,23 @@ export function configureNerRuntime({ modelPath, preferDevice } = {}) {
 // Aynı cihazda ölçüldü (8 paragraf, 2.416 karakter, Chromium):
 //   WASM  q4  -> 9.972 ms · 242 karakter/sn   (tek iş parçacığı; SharedArrayBuffer yok)
 //   WebGPU q4 ->   423 ms · 5.713 karakter/sn (11,8 kat, model yüklemesi de 2 kat hızlı)
-// Vendor'daki ort wasm zaten JSEP yapısı, yani WebGPU için ek varlık gerekmiyor.
-// WebGPU yoksa veya oturum kurulamazsa sessizce WASM'e düşülür: hız kaybı olur,
-// doğruluk değişmez.
-const DEVICE_ORDER = IS_BROWSER ? ["webgpu", "wasm"] : ["cpu"];
+// `navigator.gpu` API'sinin varlığı kullanılabilir GPU olduğu anlamına gelmez.
+// Özellikle Windows headless/kurumsal VM'lerde API görünürken requestAdapter()
+// null döner. Modeli kurmadan önce gerçek adapter'ı doğrula; yoksa JSEP'e hiç
+// dokunmadan saf CPU/WASM çalışma yolunu seç.
+async function automaticDeviceOrder() {
+  if (!IS_BROWSER) return ["cpu"];
+  const gpu = globalThis.navigator?.gpu;
+  if (!gpu || typeof gpu.requestAdapter !== "function") return ["wasm"];
+  try {
+    return (await gpu.requestAdapter()) ? ["webgpu"] : ["wasm"];
+  } catch {
+    return ["wasm"];
+  }
+}
 
 function buildPipeline(device, progressCallback) {
+  configureOnnxRuntime(device);
   const downloadProgress = createModelDownloadAggregator();
   return pipeline("token-classification", MODEL_ID, {
     device,
@@ -91,9 +105,8 @@ function loadModel(progressCallback) {
   if (!modelPromise) {
     modelPromise = (async () => {
       let lastError = null;
-      const order = forcedDevice ? [forcedDevice] : DEVICE_ORDER;
+      const order = forcedDevice ? [forcedDevice] : await automaticDeviceOrder();
       for (const device of order) {
-        if (device === "webgpu" && !globalThis.navigator?.gpu) continue;
         try {
           const classifier = await buildPipelineWithWasmFallback(device, progressCallback);
           activeDevice = device;

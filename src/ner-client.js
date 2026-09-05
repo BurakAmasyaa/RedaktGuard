@@ -113,15 +113,36 @@ function request(payload, { signal, onProgress } = {}) {
   });
 }
 
+// WebGPU adapter'ı model kurulurken veya ilk çıkarımda kaybolabilir. ORT aynı
+// worker içinde bir kez JSEP ile başlatıldıktan sonra wasmPaths değiştirmek
+// güvenilir değildir. Hata halinde worker zaten dropWorker ile bırakılır;
+// ikinci ve son deneme yeni worker'da bağımsız CPU/WASM runtime'ı kullanır.
+async function requestWithDeviceFallback(payload, options = {}) {
+  try {
+    return await request(payload, options);
+  } catch (error) {
+    if (error?.name === "AbortError" || payload.preferDevice) throw error;
+    options.onProgress?.({
+      phase: "model",
+      status: "fallback",
+      detail: "Grafik hızlandırma kullanılamadı; güvenli CPU yolu hazırlanıyor.",
+    });
+    return request({ ...payload, preferDevice: "wasm" }, options);
+  }
+}
+
 export function detectNamedEntitiesInWorker(texts, { profile = "balanced", preferDevice = null, signal, onProgress } = {}) {
   if (!texts.some((text) => String(text).trim())) return Promise.resolve([]);
-  return request({ type: "detect", texts: texts.map(String), profile, preferDevice }, { signal, onProgress });
+  return requestWithDeviceFallback(
+    { type: "detect", texts: texts.map(String), profile, preferDevice },
+    { signal, onProgress }
+  );
 }
 
 // Modeli önden yükletir. İlk taramada oturum kurma bedeli ödenmesin diye
 // Guard'ın offscreen belgesi açılır açılmaz çağrılır.
 export function warmUpNerWorker({ preferDevice = null, onProgress } = {}) {
-  return request({ type: "warmup", preferDevice }, { onProgress });
+  return requestWithDeviceFallback({ type: "warmup", preferDevice }, { onProgress });
 }
 
 // Tanılama: model hangi donanımda koşuyor (worker'da yüklendiği için
