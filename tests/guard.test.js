@@ -218,6 +218,7 @@ test("tanılama raporu ayarlardan tek tıkla indirilir ve background'da normaliz
 
 test("Chrome ve Edge E2E paketi gerçek site originlerinde izole fixture çalıştırır", async () => {
   const runner = await source("tests/e2e/run.mjs");
+  const visualFixtures = await source("tests/e2e/visual-fixtures.mjs");
   const fixture = await source("tests/e2e/fixture-page.mjs");
   const workflow = await source(".github/workflows/guard-browser-e2e.yml");
   const pkg = JSON.parse(await source("package.json"));
@@ -230,8 +231,10 @@ test("Chrome ve Edge E2E paketi gerçek site originlerinde izole fixture çalı�
   assert.match(runner, /received\.length/u, "çift teslim denetlenmiyor");
   assert.match(runner, /Promise\.all\(concurrent/u, "çoklu sekme senaryosu yok");
   for (const format of ["txt", "pdf", "docx", "xlsx", "png"]) {
-    assert.match(runner, new RegExp(`id: "${format}"`, "u"), `${format} E2E fixture eksik`);
+    assert.match(runner + visualFixtures, new RegExp(`id: "${format}"`, "u"), `${format} E2E fixture eksik`);
   }
+  assert.match(runner, /outputOracle\.verify\(fixture, output/u, "görsel çıktı bağımsız OCR ile kontrol edilmiyor");
+  assert.match(runner, /original: true/u, "OCR özgün dosyayla doğrulanmıyor");
   assert.match(fixture, /input\.addEventListener\("change"/u);
   assert.match(workflow, /browser: chrome/u);
   assert.match(workflow, /browser: edge/u);

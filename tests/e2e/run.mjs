@@ -6,14 +6,14 @@ import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 
-import { createCanvas, loadImage } from "@napi-rs/canvas";
 import JSZip from "jszip";
-import { PDFDocument, StandardFonts } from "pdf-lib";
 import * as XLSX from "xlsx";
 
 import { CdpClient } from "./cdp-client.mjs";
 import { fixturePage } from "./fixture-page.mjs";
 import { MSG } from "../../guard/src/protocol.js";
+import { visualFixtures } from "./visual-fixtures.mjs";
+import { createOutputOracle } from "./output-oracle.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, "../..");
@@ -30,6 +30,7 @@ const headed = process.argv.includes("--headed") || process.env.GUARD_E2E_HEADED
 const quick = process.argv.includes("--quick");
 const safeMode = process.argv.includes("--safe-mode");
 const timeoutMs = Number(argument("timeout") || 180_000);
+let outputOracle;
 
 function argument(name) {
   const prefix = `--${name}=`;
@@ -209,10 +210,7 @@ async function fixtureTarget(client, site) {
 async function createFixtures() {
   const text = Buffer.from(sampleText, "utf8");
 
-  const pdf = await PDFDocument.create();
-  const font = await pdf.embedFont(StandardFonts.Helvetica);
-  const page = pdf.addPage([620, 260]);
-  page.drawText(sampleText.replace(/\n/gu, "  "), { x: 30, y: 180, size: 16, font });
+  const [pdf, png] = await visualFixtures();
 
   const docx = new JSZip();
   docx.file("[Content_Types].xml", `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -234,21 +232,12 @@ async function createFixtures() {
     [secrets[0], secrets[1]],
   ]), "Sentetik");
 
-  const canvas = createCanvas(1500, 300);
-  const context = canvas.getContext("2d");
-  context.fillStyle = "#fff";
-  context.fillRect(0, 0, canvas.width, canvas.height);
-  context.fillStyle = "#000";
-  context.font = "48px Arial";
-  context.fillText(`Email: ${secrets[0]}`, 40, 105);
-  context.fillText(`Phone: ${secrets[1]}`, 40, 205);
-
   const fixtures = [
     { id: "txt", name: "redakt-e2e.txt", mime: "text/plain", bytes: text },
-    { id: "pdf", name: "redakt-e2e.pdf", mime: "application/pdf", bytes: Buffer.from(await pdf.save()) },
+    pdf,
     { id: "docx", name: "redakt-e2e.docx", mime: "application/vnd.openxmlformats-officedocument.wordprocessingml.document", bytes: await docx.generateAsync({ type: "nodebuffer" }) },
     { id: "xlsx", name: "redakt-e2e.xlsx", mime: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", bytes: Buffer.from(XLSX.write(workbook, { type: "buffer", bookType: "xlsx" })) },
-    { id: "png", name: "redakt-e2e.png", mime: "image/png", bytes: canvas.toBuffer("image/png") },
+    png,
   ];
   return quick ? fixtures.slice(0, 1) : fixtures;
 }
@@ -286,10 +275,9 @@ async function validateOutput(fixture, received, label) {
     const workbook = XLSX.read(output, { type: "buffer" });
     extracted = workbook.SheetNames.map((name) => XLSX.utils.sheet_to_csv(workbook.Sheets[name])).join("\n");
   }
-  if (fixture.id === "pdf") assert.equal((await PDFDocument.load(output)).getPageCount(), 1, `${label}: PDF çıktısı geçersiz`);
-  if (fixture.id === "png") {
-    const image = await loadImage(output);
-    assert.ok(image.width > 0 && image.height > 0, `${label}: görsel çıktısı geçersiz`);
+  if (["pdf", "png"].includes(fixture.id)) {
+    await outputOracle.verify(fixture, output, { label });
+    process.stdout.write(`[OCR] ${label} · özgün hassas alanlar okunamıyor, kontrol metni korunuyor\n`);
   }
   if (extracted) {
     for (const secret of secrets) assert.ok(!extracted.includes(secret), `${label}: özgün sentetik değer sızdı`);
@@ -456,10 +444,19 @@ for (const kind of requested) {
 if (!selected.length) throw new Error("Chrome veya Edge kurulumu bulunamadı.");
 
 const reports = [];
-for (const browser of selected) {
-  process.stdout.write(`\n[${browser.kind}] Redakt Guard ${manifest.version} E2E başlıyor…\n`);
-  const report = await runBrowser(browser.kind, browser.binary, fixtures);
-  reports.push(report);
-  process.stdout.write(`[${browser.kind}] PASS · ${report.results.length} izole sayfa dosya teslimi · ${(report.durationMs / 1000).toFixed(1)} sn\n`);
-}
-process.stdout.write(`\nPASS · ${reports.length} tarayıcı · ${reports.reduce((sum, item) => sum + item.results.length, 0)} senaryo\n`);
+try {
+  if (!quick) {
+    outputOracle = await createOutputOracle();
+    for (const fixture of fixtures.filter((item) => ["pdf", "png"].includes(item.id))) {
+      await outputOracle.verify(fixture, fixture.bytes, { original: true, label: `özgün/${fixture.id}` });
+    }
+    process.stdout.write("[OCR] Ölçüm doğrulandı: özgün PDF/PNG içindeki iki hassas alan da okunuyor.\n");
+  }
+  for (const browser of selected) {
+    process.stdout.write(`\n[${browser.kind}] Redakt Guard ${manifest.version} E2E başlıyor…\n`);
+    const report = await runBrowser(browser.kind, browser.binary, fixtures);
+    reports.push(report);
+    process.stdout.write(`[${browser.kind}] PASS · ${report.results.length} izole sayfa dosya teslimi · ${(report.durationMs / 1000).toFixed(1)} sn\n`);
+  }
+  process.stdout.write(`\nPASS · ${reports.length} tarayıcı · ${reports.reduce((sum, item) => sum + item.results.length, 0)} senaryo\n`);
+} finally { await outputOracle?.close(); }

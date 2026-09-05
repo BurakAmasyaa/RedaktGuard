@@ -264,8 +264,12 @@ MAIN/ISOLATED içerik betikleri, offscreen motoru ve dosya teslimi birlikte çal
 
 Tam sürüm matrisi her sitede sentetik TXT, PDF, DOCX, XLSX ve PNG dosyalarını; ayrıca
 ChatGPT + Gemini eşzamanlı sekme akışını sınar. Özgün e-posta/telefonun metin çıktılarda
-kalmadığı, ikili çıktıların geçerli ve özgün dosyadan farklı olduğu, `_redakte` adının
-geldiği ve siteye yalnız tek kopya teslim edildiği doğrulanır.
+kalmadığı, `_redakte` adının geldiği ve siteye yalnız tek kopya teslim edildiği doğrulanır.
+PDF/PNG çıktısı bağımsız yerel OCR ile yeniden okunur: hassas alanlar kaybolmalı,
+hassas olmayan kontrol metni korunmalıdır. Önce özgün dosyada iki alanın da OCR ile
+okunduğu doğrulanır; okunamayan özgün dosya veya boş çıktı başarı sayılmaz.
+PDF'in metin, ek açıklama ve metadata katmanları da sızıntı için kontrol edilir.
+Bu sentetik örnekler tüm belge düzenleri ve PII türleri için garanti değildir.
 Dosyalar diskte Türkçe karakter ve boşluk içeren geçici dizinlere yazılır;
 `DOM.setFileInputFiles` ile gerçek tarayıcı dosya girdisinden geçirilir. Windows
 dosya seçici penceresini veya canlı sitenin yükleme sunucusunu otomatik test etmez.
@@ -299,6 +303,11 @@ birlikte paketlenir ([PDF.js desteği](https://github.com/mozilla/pdf.js/wiki/Fr
 Bu deterministik paket site adaptörünün
 ve tarayıcı entegrasyonunun regresyonunu yakalar; canlı sitenin o günkü DOM değişimini
 doğrulamak için sürüm kabulünde kısa bir gerçek hesap smoke testi yine yapılmalıdır.
+
+Canlı kabul için `npm run test:live-fixtures` sentetik PDF/PNG/TXT, SHA-256 manifesti
+ve [tarayıcı/site kabul listesini](../tests/e2e/LIVE-ACCEPTANCE.md) yeni bir geçici
+klasörde üretir. Gerçek site sonuçları otomatik fixture sonuçlarından ayrı tutulur;
+yükleme/izin engeli olan satırlar PASS değil BLOCKED olarak kaydedilir.
 
 ## Ayarlar
 

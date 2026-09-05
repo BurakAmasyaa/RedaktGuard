@@ -6,7 +6,8 @@
   "scripts": {
     "build": "node guard/build.mjs",
     "test": "node --test tests/*.test.js",
-    "test:e2e": "node tests/e2e/run.mjs"
+    "test:e2e": "node tests/e2e/run.mjs",
+    "test:live-fixtures": "node tests/e2e/live-fixtures.mjs"
   },
   "dependencies": {
     "@huggingface/transformers": "^3.8.1",
